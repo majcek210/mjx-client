@@ -1,0 +1,25 @@
+{
+  "name": "mjx-client",
+  "version": "1.0.0",
+  "description": "A discord bot framework built on top of discord.js made by majcek210",
+  "keywords": [
+    "bot",
+    "discord",
+    "discord.js"
+  ],
+  "license": "ISC",
+  "author": "majcek210",
+  "type": "module",
+  "main": "dist/src/client.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node dist/tests/main.js"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1"
+  }
+}

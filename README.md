@@ -2,7 +2,6 @@
 
 [![npm version](https://img.shields.io/npm/v/mjx-client)](https://www.npmjs.com/package/mjx-client)  
 [![License](https://img.shields.io/npm/l/mjx-client)](LICENSE)  
-[![Node.js](https://img.shields.io/node/v/mjx-client)](https://nodejs.org/)  
 
 MJX Client is a highly customizable Discord bot framework built on top of Discord.js v14. It allows structured management of commands, events, and bot behavior, providing a flexible framework for creating Discord bots.
 

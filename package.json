@@ -11,6 +11,10 @@
   "author": "majcek210",
   "type": "module",
   "main": "dist/src/client.js",
+  "types": "dist/src/client.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node dist/tests/main.js"

@@ -4,14 +4,12 @@ import {
   IntentsBitField,
   ChatInputCommandInteraction,
   SlashCommandBuilder,
-    Collection
+  Collection,
+  ClientEvents,
+  Events,
 } from "discord.js";
-import {
-    CollectCommands
-} from "./lib/collect"
-import fs from "fs";
-import path from "path";
-import logger from "./lib/logger";
+import { CollectCommands, CollectEvents } from "./lib/collect.js";
+import logger from "./lib/logger.js";
 
 type ClientOptions = {
   name?: string;
@@ -22,6 +20,11 @@ export interface Command {
   data: Omit<SlashCommandBuilder, "addSubcommand" | "addSubcommandGroup">;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 }
+export interface Event<K extends keyof ClientEvents = keyof ClientEvents> {
+  name: K;
+  once?: boolean;
+  execute: (...args: ClientEvents[K]) => void | Promise<void>;
+}
 
 export default class Client {
   private _name: string;
@@ -30,6 +33,7 @@ export default class Client {
   private _discord: DiscordClient;
 
   public commands: Collection<string, Command> = new Collection();
+  public events: Collection<string, Event> = new Collection();
 
   constructor(options: ClientOptions = {}) {
     this._name = options.name ?? "Unnamed Client";
@@ -81,30 +85,57 @@ export default class Client {
       throw new Error("DISCORD_TOKEN is missing");
     }
 
-    this._discord.once("ClientReady", () => {
-      console.log(`${this._name} logged in as ${this._discord.user?.tag}`);
+    this._discord.once(Events.ClientReady, () => {
+      logger.output(`${this._name} logged in as ${this._discord.user?.tag}`);
     });
 
     this._discord.on("interactionCreate", async (interaction) => {
-            if (!interaction.isChatInputCommand()) return;
+      if (!interaction.isChatInputCommand()) return;
 
-            const command = this.commands.get(interaction.commandName);
-            if (!command) return;
+      const command = this.commands.get(interaction.commandName);
+      if (!command) return;
 
-            try { await command.execute(interaction); }
-            catch (err) { console.error(err); }
-        });
+      try {
+        await command.execute(interaction);
+      } catch (err: any) {
+        logger.error(err);
+      }
+    });
 
     await this._discord.login(resolvedToken);
+
+    this.events.forEach((event) => {
+      if (event.once) {
+        try {
+          this._discord.once(event.name, (...args) => event.execute(...args));
+        } catch (err: any) {
+          logger.error(err);
+        }
+      } else {
+        try {
+          this._discord.on(event.name, (...args) => event.execute(...args));
+        } catch (err: any) {
+          logger.error(err);
+        }
+      }
+    });
 
     this.started = true;
     return this;
   }
 
-  async registerCommandRoute(dir:string) {
+  async registerCommandsRoute(dir: string) {
     const { total, loaded, commands } = await CollectCommands(dir);
     commands.forEach((cmd, name) => this.commands.set(name, cmd));
-    if (this._debug) logger.output(`Loaded ${loaded} out of ${total} commands.`)
+    if (this._debug)
+      logger.output(`Loaded ${loaded} out of ${total} commands.`);
+  }
+
+  async registerEventsRoute(dir: string) {
+    const { total, loaded, events } = await CollectEvents(dir);
+    events.forEach((event, name) => this.events.set(name, event));
+    console.log(this.events)
+    if (this._debug) logger.output(`Loaded ${loaded} out of ${total} events.`);
   }
 
   private ensureMutable(): void {

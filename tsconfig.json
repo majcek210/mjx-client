@@ -1,11 +1,25 @@
 {
   "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "lib": ["ES2022"],
+    "types": ["node"],
+
     "outDir": "dist",
-    "module": "ESNext",
-    "target": "ES6",
-    "moduleResolution": "Node",
     "declaration": true,
-    "esModuleInterop": true
+    "removeComments": true,
+
+    "strict": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "esModuleInterop": true,
+    "skipLibCheck": false
   },
-  "include": ["src/**/*"]
+  "include": ["src", "tests"],
+  "exclude": ["node_modules"]
 }

@@ -1,18 +1,18 @@
 export default class logger {
-    private static format(message: string): string {
-        const timestamp = new Date().toISOString();
-        return `[${timestamp}] ${message}`;
-    }
+  private static format(message: string): string {
+    const timestamp = new Date().toISOString();
+    return `[${timestamp}] ${message}`;
+  }
 
-    static output(message: string) {
-        console.log(this.format(message));
-    }
+  static output(...messages: any[]) {
+    console.log(this.format(messages.map(String).join(" ")));
+  }
 
-    static warn(message: string) {
-        console.warn(`\x1b[33m${this.format(message)}\x1b[0m`); // yellow
-    }
+  static warn(...messages: any[]) {
+    console.warn(`\x1b[33m${this.format(messages.map(String).join(" "))}\x1b[0m`);
+  }
 
-    static error(message: string) {
-        console.error(`\x1b[31m${this.format(message)}\x1b[0m`); // red
-    }
+  static error(...messages: any[]) {
+    console.error(`\x1b[31m${this.format(messages.map(String).join(" "))}\x1b[0m`);
+  }
 }

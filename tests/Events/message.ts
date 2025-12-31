@@ -6,7 +6,7 @@ const messageEvent: Event<"messageCreate"> = {
   once: false,
   async execute(message: Message) {
     if (message.author.bot) return;
-    const channel:any = message.client.channels.cache.get("1286307006340403348");
+    const channel:any = message.client.channels.cache.get(process.env.TEST_CHANNEL!);
     if (channel?.isTextBased()) {
       await channel.send(`Hello! Received a message from ${message.author.tag}`);
     }

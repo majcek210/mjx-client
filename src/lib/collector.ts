@@ -19,8 +19,8 @@ export async function CollectCommands(dir: string): Promise<{
 
     for (const file of files) {
       const filePath = path.join(dir, file);
-      const module = await import(filePath);
-      const command: Command = module.command;
+      const module = await import(pathToFileURL(filePath).href)
+      const command: Command = module.default ?? module.command;
       if (!command?.data || !command?.execute) continue;
 
       commands.set(command.data.name, command);

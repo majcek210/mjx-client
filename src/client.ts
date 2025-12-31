@@ -8,8 +8,10 @@ import {
   ClientEvents,
   Events,
 } from "discord.js";
-import { CollectCommands, CollectEvents } from "./lib/collect.js";
+import { CollectCommands, CollectEvents } from "./lib/collector.js";
 import logger from "./lib/logger.js";
+import { REST } from "@discordjs/rest";
+import { Routes } from "discord.js";
 
 type ClientOptions = {
   name?: string;
@@ -34,6 +36,7 @@ export default class Client {
 
   public commands: Collection<string, Command> = new Collection();
   public events: Collection<string, Event> = new Collection();
+  public clientId: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
     this._name = options.name ?? "Unnamed Client";
@@ -87,6 +90,9 @@ export default class Client {
 
     this._discord.once(Events.ClientReady, () => {
       logger.output(`${this._name} logged in as ${this._discord.user?.tag}`);
+      if (!this.clientId) {
+        this.clientId = this._discord?.user?.id;
+      }
     });
 
     this._discord.on("interactionCreate", async (interaction) => {
@@ -134,8 +140,53 @@ export default class Client {
   async registerEventsRoute(dir: string) {
     const { total, loaded, events } = await CollectEvents(dir);
     events.forEach((event, name) => this.events.set(name, event));
-    console.log(this.events)
     if (this._debug) logger.output(`Loaded ${loaded} out of ${total} events.`);
+  }
+
+  async pushCommands(token?: string, guildId?: string) {
+    const resolvedToken = token ?? process.env.DISCORD_TOKEN;
+    if (!resolvedToken) {
+      logger.error("DISCORD_TOKEN is missing");
+      return;
+    }
+
+    if (!this._discord.isReady()) {
+      logger.warn("Client isn't ready yet. Waiting...")
+      await new Promise<void>((resolve) => {
+        this._discord.once(Events.ClientReady, () => resolve());
+      });
+    }
+
+    const commandsData = this.commands.map((cmd) => cmd.data.toJSON());
+    const rest = new REST({ version: "10" }).setToken(resolvedToken);
+
+    if (!this.clientId) {
+      logger.error(
+        "Client ID wasnt intalized correctly, try adding it manualy with setClientId"
+      );
+      return;
+    }
+
+    try {
+      if (guildId) {
+        await rest.put(
+          Routes.applicationGuildCommands(this.clientId, guildId),
+          { body: commandsData }
+        );
+        if (this._debug)
+          logger.output(
+            `Registered ${commandsData.length} commands to guild ${guildId}`
+          );
+      } else {
+        await rest.put(Routes.applicationCommands(this.clientId), {
+          body: commandsData,
+        });
+        if (this._debug)
+          logger.output(`Registered ${commandsData.length} global commands`);
+      }
+    } catch (err: any) {
+      logger.error("Failed to register commands:", err);
+    }
   }
 
   private ensureMutable(): void {

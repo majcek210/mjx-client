@@ -1,6 +1,6 @@
 {
   "name": "mjx-client",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "description": "A discord bot framework built on top of discord.js made by majcek210",
   "keywords": [
     "bot",

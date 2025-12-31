@@ -37,6 +37,7 @@ jobs:
           fi
 
       - name: Publish to npmjs.org
+        id: publish-npm
         run: |
           if [ "$is_beta" = "true" ]; then
             npm publish --access public --tag beta
@@ -45,6 +46,7 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        continue-on-error: true 
 
       - name: Publish to GitHub Packages
         run: |

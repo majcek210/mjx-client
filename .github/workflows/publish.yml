@@ -34,23 +34,30 @@ jobs:
             echo "is_beta=true" >> $GITHUB_ENV
           else
             echo "is_beta=false" >> $GITHUB_ENV
-          fi
 
-      - name: Publish to npmjs.org
-        id: publish-npm
+      - name: Debug info
         run: |
+          echo "Tag: ${{ env.tag }}"
+          echo "Is beta: ${{ env.is_beta }}"
+
+      - name: Publish to npmjs.org (scoped @npm-org)
+        run: |
+          echo "Publishing to npmjs.org..."
+          npm whoami --registry https://registry.npmjs.org/ || echo "Failed npm auth"
           if [ "$is_beta" = "true" ]; then
-            npm publish --access public --tag beta
+            npm publish --access public --tag beta --registry https://registry.npmjs.org/
           else
-            npm publish --access public
+            npm publish --access public --registry https://registry.npmjs.org/
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        continue-on-error: true 
+        continue-on-error: true
 
-      - name: Publish to GitHub Packages
+      - name: Publish to GitHub Packages (scoped @github)
         run: |
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
+          echo "Publishing to GitHub Packages..."
+          npm whoami --registry https://npm.pkg.github.com/ || echo "Failed GitHub auth"
           if [ "$is_beta" = "true" ]; then
             npm publish --access public --tag beta --registry https://npm.pkg.github.com/
           else

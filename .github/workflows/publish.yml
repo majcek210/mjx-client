@@ -37,8 +37,11 @@ jobs:
 
       - name: Debug info
         run: |
-          echo "Tag: ${{ env.tag }}"
-          echo "Is beta: ${{ env.is_beta }}"
+          echo "Tag: $tag"
+          echo "Is beta: $is_beta"
+        env:
+          tag: ${{ env.tag }}
+          is_beta: ${{ env.is_beta }}
 
       - name: Publish to npmjs.org (scoped @npm-org)
         run: |
@@ -51,11 +54,11 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        continue-on-error: true
+          is_beta: ${{ env.is_beta }}
 
       - name: Publish to GitHub Packages (scoped @github)
         run: |
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=$GITHUB_TOKEN" > ~/.npmrc
           echo "Publishing to GitHub Packages..."
           npm whoami --registry https://npm.pkg.github.com/ || echo "Failed GitHub auth"
           if [ "$is_beta" = "true" ]; then
@@ -65,3 +68,4 @@ jobs:
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          is_beta: ${{ env.is_beta }}

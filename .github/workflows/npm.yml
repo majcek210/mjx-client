@@ -27,8 +27,8 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           if [[ "$VERSION" == *"-"* ]]; then
             echo "Prerelease detected ($VERSION) → publishing as beta"
-            npm publish --tag beta
+            npm publish --tag beta --provenance
           else
             echo "Stable release ($VERSION) → publishing as latest"
-            npm publish
+            npm publish --provenance
           fi

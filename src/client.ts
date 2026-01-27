@@ -2,31 +2,22 @@ import {
   Client as DiscordClient,
   GatewayIntentBits,
   IntentsBitField,
-  ChatInputCommandInteraction,
-  SlashCommandBuilder,
   Collection,
-  ClientEvents,
   Events,
 } from "discord.js";
-import { CollectCommands, CollectEvents } from "./lib/collector.js";
+import { CollectButtons, CollectCommands, CollectEvents } from "./lib/collector.js";
 import logger from "./lib/logger.js";
 import { REST } from "@discordjs/rest";
 import { Routes } from "discord.js";
+import { Command, Event, Button} from "./types.js";
 
 type ClientOptions = {
   name?: string;
   debug?: boolean;
   intents?: IntentsBitField;
 };
-export interface Command {
-  data: Omit<SlashCommandBuilder, "addSubcommand" | "addSubcommandGroup">;
-  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
-}
-export interface Event<K extends keyof ClientEvents = keyof ClientEvents> {
-  name: K;
-  once?: boolean;
-  execute: (...args: ClientEvents[K]) => void | Promise<void>;
-}
+
+export * from "./types.js";
 
 export default class Client {
   private _name: string;
@@ -36,6 +27,7 @@ export default class Client {
 
   public commands: Collection<string, Command> = new Collection();
   public events: Collection<string, Event> = new Collection();
+  public buttons: Collection<string, Button> = new Collection();
   public clientId: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
@@ -142,6 +134,12 @@ export default class Client {
     events.forEach((event, name) => this.events.set(name, event));
     if (this._debug) logger.output(`Loaded ${loaded} out of ${total} events.`);
   }
+  async registerButtonsRoute(dir: string) {
+    const { total, loaded, buttons } = await CollectButtons(dir);
+    buttons.forEach((button, name) => this.buttons.set(name, button));
+    if (this._debug) logger.output(`Loaded ${loaded} out of ${total} buttons.`);
+  }
+
 
   async pushCommands(token?: string, guildId?: string) {
     const resolvedToken = token ?? process.env.DISCORD_TOKEN;

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import type { Command,Event } from "../client.js";
+import type { Command,Event, Button} from "../client.js"
 import logger from "./logger.js";
 import { pathToFileURL } from "url"
 
@@ -67,3 +67,35 @@ export async function CollectEvents(
     return { total: 0, loaded: 0, events: new Map() }
   }
 }
+
+export async function CollectButtons(
+  dir: string
+): Promise<{
+  total: number
+  loaded: number
+  buttons: Map<string, Button>
+}> {
+  try {
+    const buttons = new Map<string, Button>
+    const files = fs.readdirSync(dir).filter(f => f.endsWith(".js"))
+
+    const total = files.length
+    let loaded = 0
+
+    for (const file of files) {
+      const filePath = path.join(dir, file)
+      const module = await import(pathToFileURL(filePath).href)
+      const button: Button = module.default ?? module.button
+      if (!button?.data || !button?.execute) continue
+
+      buttons.set(button.data.customId, button)
+      loaded++
+    }
+
+    return { total, loaded, buttons }
+  } catch (err:any) {
+    logger.error(err)
+    return { total: 0, loaded: 0, buttons: new Map() }
+  }
+}
+

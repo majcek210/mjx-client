@@ -10,8 +10,8 @@
   "license": "ISC",
   "author": "majcek210",
   "type": "module",
-  "main": "dist/src/client.js",
-  "types": "dist/src/client.d.ts",
+  "main": "dist/client.js",
+  "types": "dist/client.d.ts",
   "files": [
     "dist"
   ],

@@ -7,11 +7,15 @@ import {
   Collection,
   ClientEvents,
   Events,
+  Routes,
 } from "discord.js";
+import { REST } from "@discordjs/rest";
 import { CollectCommands, CollectEvents } from "./lib/collector.js";
 import logger from "./lib/logger.js";
-import { REST } from "@discordjs/rest";
-import { Routes } from "discord.js";
+
+// Re-export everything from discord.js
+export * from "discord.js";
+export { REST };
 
 type ClientOptions = {
   name?: string;
@@ -95,7 +99,7 @@ export default class Client {
       }
     });
 
-    this._discord.on("interactionCreate", async (interaction) => {
+    this._discord.on("interactionCreate", async (interaction: any) => {
       if (!interaction.isChatInputCommand()) return;
 
       const command = this.commands.get(interaction.commandName);
@@ -110,16 +114,16 @@ export default class Client {
 
     await this._discord.login(resolvedToken);
 
-    this.events.forEach((event) => {
+    this.events.forEach((event: any) => {
       if (event.once) {
         try {
-          this._discord.once(event.name, (...args) => event.execute(...args));
+          this._discord.once(event.name, (...args: any[]) => event.execute(...args));
         } catch (err: any) {
           logger.error(err);
         }
       } else {
         try {
-          this._discord.on(event.name, (...args) => event.execute(...args));
+          this._discord.on(event.name, (...args: any[]) => event.execute(...args));
         } catch (err: any) {
           logger.error(err);
         }
@@ -132,7 +136,7 @@ export default class Client {
 
   async registerCommandsRoute(dir: string) {
     const { total, loaded, commands } = await CollectCommands(dir);
-    commands.forEach((cmd, name) => this.commands.set(name, cmd));
+    commands.forEach((cmd: any, name: string) => this.commands.set(name, cmd));
     if (this._debug)
       logger.output(`Loaded ${loaded} out of ${total} commands.`);
   }

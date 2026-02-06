@@ -88,7 +88,7 @@ export async function CollectButtons(
       const button: Button = module.default ?? module.button
       if (!button?.data || !button?.execute) continue
 
-      buttons.set(button.data.customId, button)
+     // buttons.set(button.data.customId, button)
       loaded++
     }
 

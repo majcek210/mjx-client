@@ -1,7 +1,6 @@
 import {
   Client as DiscordClient,
   GatewayIntentBits,
-  IntentsBitField,
   Collection,
   Events,
   Routes,
@@ -15,7 +14,7 @@ import { Command, Event, Button} from "./types.js";
 type ClientOptions = {
   name?: string;
   debug?: boolean;
-  intents?: IntentsBitField;
+  intents?: any;
 };
 export * from "discord.js";
 export { REST };

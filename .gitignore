@@ -2,3 +2,5 @@
 node_modules
 dist
 tests
+.claude
+CLAUDE.md

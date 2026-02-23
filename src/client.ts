@@ -1,24 +1,27 @@
+import path from "path";
 import {
   Client as DiscordClient,
   GatewayIntentBits,
   Collection,
   Events,
   Routes,
+  Interaction,
 } from "discord.js";
-import { CollectButtons, CollectCommands, CollectEvents } from "./lib/collector.js";
+import { collectAll } from "./lib/collector.js";
+import { matchButton } from "./lib/router.js";
 import logger from "./lib/logger.js";
 import { REST } from "@discordjs/rest";
 
-import { Command, Event, Button} from "./types.js";
+import type { Command, Event, Button } from "./types.js";
 
 type ClientOptions = {
   name?: string;
   debug?: boolean;
-  intents?: any;
+  intents?: GatewayIntentBits[];
 };
+
 export * from "discord.js";
 export { REST };
-
 export * from "./types.js";
 
 export default class Client {
@@ -60,6 +63,11 @@ export default class Client {
     return this;
   }
 
+  setClientId(id: string): this {
+    this.clientId = id;
+    return this;
+  }
+
   get name(): string {
     return this._name;
   }
@@ -72,100 +80,103 @@ export default class Client {
     return this._discord;
   }
 
+  async use(appDir: string): Promise<this> {
+    const resolvedDir = path.isAbsolute(appDir)
+      ? appDir
+      : path.join(process.cwd(), appDir);
+
+    const { commands, events, buttons, counts } = await collectAll(resolvedDir);
+
+    commands.forEach((cmd, name) => this.commands.set(name, cmd));
+    buttons.forEach((btn, id) => this.buttons.set(id, btn));
+    events.forEach((evt, name) => {
+      this.events.set(name, evt);
+      if (this.started) this.attachEventListener(evt);
+    });
+
+    if (this._debug) {
+      logger.output(
+        `[use] ${counts.commands.loaded}/${counts.commands.total} commands,` +
+        ` ${counts.events.loaded}/${counts.events.total} events,` +
+        ` ${counts.buttons.loaded}/${counts.buttons.total} buttons`
+      );
+    }
+
+    return this;
+  }
+
   async start(token?: string): Promise<this> {
     if (this.started) {
       throw new Error("Client already started");
     }
 
-    const resolvedToken = token ?? process.env.DISCORD_TOKEN;
+    const resolvedToken = token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
     if (!resolvedToken) {
-      throw new Error("DISCORD_TOKEN is missing");
+      throw new Error("No token provided. Set TOKEN or DISCORD_TOKEN env var.");
     }
 
     this._discord.once(Events.ClientReady, () => {
       logger.output(`${this._name} logged in as ${this._discord.user?.tag}`);
       if (!this.clientId) {
-        this.clientId = this._discord?.user?.id;
+        this.clientId = this._discord.user?.id;
       }
     });
 
-    this._discord.on("interactionCreate", async (interaction: any) => {
-      if (!interaction.isChatInputCommand()) return;
-
-      const command = this.commands.get(interaction.commandName);
-      if (!command) return;
-
-      try {
-        await command.execute(interaction);
-      } catch (err: any) {
-        logger.error(err);
+    this._discord.on("interactionCreate", async (interaction: Interaction) => {
+      if (interaction.isChatInputCommand()) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command) return;
+        try {
+          await command.execute(interaction);
+        } catch (err: unknown) {
+          logger.error(`Error in command "${interaction.commandName}":`, err);
+        }
+      } else if (interaction.isButton()) {
+        for (const button of this.buttons.values()) {
+          const params = matchButton(button.customId, interaction.customId);
+          if (params !== null) {
+            try {
+              await button.execute(interaction, params);
+            } catch (err: unknown) {
+              logger.error(`Error in button "${button.customId}":`, err);
+            }
+            break;
+          }
+        }
       }
     });
+
+    this.events.forEach((event) => this.attachEventListener(event));
 
     await this._discord.login(resolvedToken);
-
-    this.events.forEach((event: any) => {
-      if (event.once) {
-        try {
-          this._discord.once(event.name, (...args: any[]) => event.execute(...args));
-        } catch (err: any) {
-          logger.error(err);
-        }
-      } else {
-        try {
-          this._discord.on(event.name, (...args: any[]) => event.execute(...args));
-        } catch (err: any) {
-          logger.error(err);
-        }
-      }
-    });
 
     this.started = true;
     return this;
   }
 
-  async registerCommandsRoute(dir: string) {
-    const { total, loaded, commands } = await CollectCommands(dir);
-    commands.forEach((cmd: any, name: string) => this.commands.set(name, cmd));
-    if (this._debug)
-      logger.output(`Loaded ${loaded} out of ${total} commands.`);
-  }
-
-  async registerEventsRoute(dir: string) {
-    const { total, loaded, events } = await CollectEvents(dir);
-    events.forEach((event, name) => this.events.set(name, event));
-    if (this._debug) logger.output(`Loaded ${loaded} out of ${total} events.`);
-  }
-  async registerButtonsRoute(dir: string) {
-    const { total, loaded, buttons } = await CollectButtons(dir);
-    buttons.forEach((button, name) => this.buttons.set(name, button));
-    if (this._debug) logger.output(`Loaded ${loaded} out of ${total} buttons.`);
-  }
-
-
-  async pushCommands(token?: string, guildId?: string) {
-    const resolvedToken = token ?? process.env.DISCORD_TOKEN;
+  async pushCommands(token?: string, guildId?: string): Promise<void> {
+    const resolvedToken = token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
     if (!resolvedToken) {
-      logger.error("DISCORD_TOKEN is missing");
+      logger.error("No token provided. Set TOKEN or DISCORD_TOKEN env var.");
       return;
     }
 
     if (!this._discord.isReady()) {
-      logger.warn("Client isn't ready yet. Waiting...")
+      logger.warn("Client isn't ready yet. Waiting...");
       await new Promise<void>((resolve) => {
         this._discord.once(Events.ClientReady, () => resolve());
       });
     }
 
-    const commandsData = this.commands.map((cmd) => cmd.data.toJSON());
-    const rest = new REST({ version: "10" }).setToken(resolvedToken);
-
     if (!this.clientId) {
       logger.error(
-        "Client ID wasnt intalized correctly, try adding it manualy with setClientId"
+        "Client ID wasn't initialized correctly, try adding it manually with setClientId()"
       );
       return;
     }
+
+    const commandsData = this.commands.map((cmd) => cmd.data.toJSON());
+    const rest = new REST({ version: "10" }).setToken(resolvedToken);
 
     try {
       if (guildId) {
@@ -174,9 +185,7 @@ export default class Client {
           { body: commandsData }
         );
         if (this._debug)
-          logger.output(
-            `Registered ${commandsData.length} commands to guild ${guildId}`
-          );
+          logger.output(`Registered ${commandsData.length} commands to guild ${guildId}`);
       } else {
         await rest.put(Routes.applicationCommands(this.clientId), {
           body: commandsData,
@@ -184,8 +193,29 @@ export default class Client {
         if (this._debug)
           logger.output(`Registered ${commandsData.length} global commands`);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       logger.error("Failed to register commands:", err);
+    }
+  }
+
+  private attachEventListener(event: Event): void {
+    const handler = (...args: unknown[]): void => {
+      try {
+        const result = (event.execute as (...a: unknown[]) => void | Promise<void>)(...args);
+        if (result instanceof Promise) {
+          result.catch((err: unknown) =>
+            logger.error(`Async error in event "${String(event.name)}":`, err)
+          );
+        }
+      } catch (err: unknown) {
+        logger.error(`Error in event "${String(event.name)}":`, err);
+      }
+    };
+
+    if (event.once) {
+      this._discord.once(String(event.name), handler);
+    } else {
+      this._discord.on(String(event.name), handler);
     }
   }
 

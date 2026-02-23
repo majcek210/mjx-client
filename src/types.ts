@@ -2,7 +2,6 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
   ClientEvents,
-  ButtonBuilder,
   ButtonInteraction
 } from "discord.js";
 
@@ -17,6 +16,9 @@ export interface Event<K extends keyof ClientEvents = keyof ClientEvents> {
 }
 
 export interface Button {
-  data: ButtonBuilder;
-  execute: (interaction: ButtonInteraction) => Promise<void>;
+  customId: string; // supports ":param" segments, e.g. "delete/:itemId"
+  execute: (
+    interaction: ButtonInteraction,
+    params: Record<string, string>
+  ) => Promise<void>;
 }

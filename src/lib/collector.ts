@@ -1,101 +1,115 @@
-import fs from "fs";
 import path from "path";
-import type { Command,Event, Button} from "../client.js"
+import { scanDirectory } from "./scanner.js";
 import logger from "./logger.js";
-import { pathToFileURL } from "url"
+import type { Command, Event, Button } from "../types.js";
 
-export async function CollectCommands(dir: string): Promise<{
+export async function collectCommands(dir: string): Promise<{
   total: number;
   loaded: number;
   commands: Map<string, Command>;
 }> {
-  try {
-    const commands = new Map<string, Command>();
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".js"));
-    const total = files.length;
-    let loaded = 0;
+  const commands = new Map<string, Command>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
 
-    for (const file of files) {
-      const filePath = path.join(dir, file);
-      const module = await import(pathToFileURL(filePath).href)
-      const command: Command = module.default ?? module.command;
-      if (!command?.data || !command?.execute) continue;
-
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const command = (mod.default ?? mod.command) as Command | undefined;
+      if (!command?.data || !command?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing data or execute`);
+        continue;
+      }
       commands.set(command.data.name, command);
       loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load command ${file.relativePath}:`, err);
     }
-    return { total, loaded, commands };
-  } catch (err:any) {
-    logger.error(err);
-    return {
-      total: 0,
-      loaded: 0,
-      commands: new Map<string, Command>(),
-    };
   }
+
+  return { total: files.length, loaded, commands };
 }
 
-export async function CollectEvents(
-  dir: string
-): Promise<{
-  total: number
-  loaded: number
-  events: Map<string, Event>
+export async function collectEvents(dir: string): Promise<{
+  total: number;
+  loaded: number;
+  events: Map<string, Event>;
 }> {
-  try {
-    const events = new Map<string, Event>()
-    const files = fs.readdirSync(dir).filter(f => f.endsWith(".js"))
+  const events = new Map<string, Event>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
 
-    const total = files.length
-    let loaded = 0
-
-    for (const file of files) {
-      const filePath = path.join(dir, file)
-      const module = await import(pathToFileURL(filePath).href)
-      const event: Event = module.default ?? module.event
-      if (!event?.name || !event?.execute) continue
-
-      events.set(event.name, event)
-      loaded++
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const event = (mod.default ?? mod.event) as Event | undefined;
+      if (!event?.name || !event?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing name or execute`);
+        continue;
+      }
+      events.set(String(event.name), event);
+      loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load event ${file.relativePath}:`, err);
     }
-
-    return { total, loaded, events }
-  } catch (err:any) {
-    logger.error(err)
-    return { total: 0, loaded: 0, events: new Map() }
   }
+
+  return { total: files.length, loaded, events };
 }
 
-export async function CollectButtons(
-  dir: string
-): Promise<{
-  total: number
-  loaded: number
-  buttons: Map<string, Button>
+export async function collectButtons(dir: string): Promise<{
+  total: number;
+  loaded: number;
+  buttons: Map<string, Button>;
 }> {
-  try {
-    const buttons = new Map<string, Button>
-    const files = fs.readdirSync(dir).filter(f => f.endsWith(".js"))
+  const buttons = new Map<string, Button>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
 
-    const total = files.length
-    let loaded = 0
-
-    for (const file of files) {
-      const filePath = path.join(dir, file)
-      const module = await import(pathToFileURL(filePath).href)
-      const button: Button = module.default ?? module.button
-      if (!button?.data || !button?.execute) continue
-
-     // buttons.set(button.data.customId, button)
-      loaded++
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const button = (mod.default ?? mod.button) as Button | undefined;
+      if (!button?.customId || !button?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing customId or execute`);
+        continue;
+      }
+      buttons.set(button.customId, button);
+      loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load button ${file.relativePath}:`, err);
     }
-
-    return { total, loaded, buttons }
-  } catch (err:any) {
-    logger.error(err)
-    return { total: 0, loaded: 0, buttons: new Map() }
   }
+
+  return { total: files.length, loaded, buttons };
 }
 
+export interface CollectAllResult {
+  commands: Map<string, Command>;
+  events: Map<string, Event>;
+  buttons: Map<string, Button>;
+  counts: {
+    commands: { total: number; loaded: number };
+    events: { total: number; loaded: number };
+    buttons: { total: number; loaded: number };
+  };
+}
+
+export async function collectAll(appDir: string): Promise<CollectAllResult> {
+  const [cmdResult, evtResult, btnResult] = await Promise.all([
+    collectCommands(path.join(appDir, "commands")),
+    collectEvents(path.join(appDir, "events")),
+    collectButtons(path.join(appDir, "buttons")),
+  ]);
+
+  return {
+    commands: cmdResult.commands,
+    events: evtResult.events,
+    buttons: btnResult.buttons,
+    counts: {
+      commands: { total: cmdResult.total, loaded: cmdResult.loaded },
+      events: { total: evtResult.total, loaded: evtResult.loaded },
+      buttons: { total: btnResult.total, loaded: btnResult.loaded },
+    },
+  };
+}

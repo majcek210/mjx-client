@@ -12,7 +12,7 @@ import { matchCustomId } from "./lib/router.js";
 import logger from "./lib/logger.js";
 import { REST } from "@discordjs/rest";
 
-import type { Command, Event, Button, Modal } from "./types.js";
+import type { Command, Event, Button, Modal, SelectMenu } from "./types.js";
 
 type ClientOptions = {
   name?: string;
@@ -34,6 +34,7 @@ export default class Client {
   public events: Collection<string, Event> = new Collection();
   public buttons: Collection<string, Button> = new Collection();
   public modals: Collection<string, Modal> = new Collection();
+  public selectMenus: Collection<string, SelectMenu> = new Collection();
   public clientId: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
@@ -86,11 +87,12 @@ export default class Client {
       ? appDir
       : path.join(process.cwd(), appDir);
 
-    const { commands, events, buttons, modals, counts } = await collectAll(resolvedDir);
+    const { commands, events, buttons, modals, selectMenus, counts } = await collectAll(resolvedDir);
 
     commands.forEach((cmd, name) => this.commands.set(name, cmd));
     buttons.forEach((btn, id) => this.buttons.set(id, btn));
     modals.forEach((modal, id) => this.modals.set(id, modal));
+    selectMenus.forEach((menu, id) => this.selectMenus.set(id, menu));
     events.forEach((evt, name) => {
       this.events.set(name, evt);
       if (this.started) this.attachEventListener(evt);
@@ -101,7 +103,8 @@ export default class Client {
         `[use] ${counts.commands.loaded}/${counts.commands.total} commands,` +
         ` ${counts.events.loaded}/${counts.events.total} events,` +
         ` ${counts.buttons.loaded}/${counts.buttons.total} buttons,` +
-        ` ${counts.modals.loaded}/${counts.modals.total} modals`
+        ` ${counts.modals.loaded}/${counts.modals.total} modals,` +
+        ` ${counts.selectMenus.loaded}/${counts.selectMenus.total} select menus`
       );
     }
 
@@ -154,6 +157,18 @@ export default class Client {
               await modal.execute(interaction, params);
             } catch (err: unknown) {
               logger.error(`Error in modal "${modal.customId}":`, err);
+            }
+            break;
+          }
+        }
+      } else if (interaction.isAnySelectMenu()) {
+        for (const menu of this.selectMenus.values()) {
+          const params = matchCustomId(menu.customId, interaction.customId);
+          if (params !== null) {
+            try {
+              await menu.execute(interaction, params);
+            } catch (err: unknown) {
+              logger.error(`Error in select menu "${menu.customId}":`, err);
             }
             break;
           }

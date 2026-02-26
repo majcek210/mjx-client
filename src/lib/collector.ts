@@ -1,7 +1,7 @@
 import path from "path";
 import { scanDirectory } from "./scanner.js";
 import logger from "./logger.js";
-import type { Command, Event, Button, Modal } from "../types.js";
+import type { Command, Event, Button, Modal, SelectMenu } from "../types.js";
 
 export async function collectCommands(dir: string): Promise<{
   total: number;
@@ -111,25 +111,55 @@ export async function collectModals(dir: string): Promise<{
   return { total: files.length, loaded, modals };
 }
 
+export async function collectSelectMenus(dir: string): Promise<{
+  total: number;
+  loaded: number;
+  selectMenus: Map<string, SelectMenu>;
+}> {
+  const selectMenus = new Map<string, SelectMenu>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
+
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const selectMenu = (mod.default ?? mod.selectMenu) as SelectMenu | undefined;
+      if (!selectMenu?.customId || !selectMenu?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing customId or execute`);
+        continue;
+      }
+      selectMenus.set(selectMenu.customId, selectMenu);
+      loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load select menu ${file.relativePath}:`, err);
+    }
+  }
+
+  return { total: files.length, loaded, selectMenus };
+}
+
 export interface CollectAllResult {
   commands: Map<string, Command>;
   events: Map<string, Event>;
   buttons: Map<string, Button>;
   modals: Map<string, Modal>;
+  selectMenus: Map<string, SelectMenu>;
   counts: {
     commands: { total: number; loaded: number };
     events: { total: number; loaded: number };
     buttons: { total: number; loaded: number };
     modals: { total: number; loaded: number };
+    selectMenus: { total: number; loaded: number };
   };
 }
 
 export async function collectAll(appDir: string): Promise<CollectAllResult> {
-  const [cmdResult, evtResult, btnResult, modResult] = await Promise.all([
+  const [cmdResult, evtResult, btnResult, modResult, selResult] = await Promise.all([
     collectCommands(path.join(appDir, "commands")),
     collectEvents(path.join(appDir, "events")),
     collectButtons(path.join(appDir, "buttons")),
     collectModals(path.join(appDir, "modals")),
+    collectSelectMenus(path.join(appDir, "select-menus")),
   ]);
 
   return {
@@ -137,11 +167,13 @@ export async function collectAll(appDir: string): Promise<CollectAllResult> {
     events: evtResult.events,
     buttons: btnResult.buttons,
     modals: modResult.modals,
+    selectMenus: selResult.selectMenus,
     counts: {
       commands: { total: cmdResult.total, loaded: cmdResult.loaded },
       events: { total: evtResult.total, loaded: evtResult.loaded },
       buttons: { total: btnResult.total, loaded: btnResult.loaded },
       modals: { total: modResult.total, loaded: modResult.loaded },
+      selectMenus: { total: selResult.total, loaded: selResult.loaded },
     },
   };
 }

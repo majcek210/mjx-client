@@ -4,6 +4,7 @@ import {
   ClientEvents,
   ButtonInteraction,
   ModalSubmitInteraction,
+  AnySelectMenuInteraction,
 } from "discord.js";
 
 export interface Command {
@@ -28,6 +29,14 @@ export interface Modal {
   customId: string; // supports ":param" segments, e.g. "confirm/:action"
   execute: (
     interaction: ModalSubmitInteraction,
+    params: Record<string, string>
+  ) => Promise<void>;
+}
+
+export interface SelectMenu {
+  customId: string; // supports ":param" segments, e.g. "pick/:category"
+  execute: (
+    interaction: AnySelectMenuInteraction,
     params: Record<string, string>
   ) => Promise<void>;
 }

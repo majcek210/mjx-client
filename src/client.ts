@@ -8,11 +8,11 @@ import {
   Interaction,
 } from "discord.js";
 import { collectAll } from "./lib/collector.js";
-import { matchButton } from "./lib/router.js";
+import { matchCustomId } from "./lib/router.js";
 import logger from "./lib/logger.js";
 import { REST } from "@discordjs/rest";
 
-import type { Command, Event, Button } from "./types.js";
+import type { Command, Event, Button, Modal } from "./types.js";
 
 type ClientOptions = {
   name?: string;
@@ -33,6 +33,7 @@ export default class Client {
   public commands: Collection<string, Command> = new Collection();
   public events: Collection<string, Event> = new Collection();
   public buttons: Collection<string, Button> = new Collection();
+  public modals: Collection<string, Modal> = new Collection();
   public clientId: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
@@ -85,10 +86,11 @@ export default class Client {
       ? appDir
       : path.join(process.cwd(), appDir);
 
-    const { commands, events, buttons, counts } = await collectAll(resolvedDir);
+    const { commands, events, buttons, modals, counts } = await collectAll(resolvedDir);
 
     commands.forEach((cmd, name) => this.commands.set(name, cmd));
     buttons.forEach((btn, id) => this.buttons.set(id, btn));
+    modals.forEach((modal, id) => this.modals.set(id, modal));
     events.forEach((evt, name) => {
       this.events.set(name, evt);
       if (this.started) this.attachEventListener(evt);
@@ -98,7 +100,8 @@ export default class Client {
       logger.output(
         `[use] ${counts.commands.loaded}/${counts.commands.total} commands,` +
         ` ${counts.events.loaded}/${counts.events.total} events,` +
-        ` ${counts.buttons.loaded}/${counts.buttons.total} buttons`
+        ` ${counts.buttons.loaded}/${counts.buttons.total} buttons,` +
+        ` ${counts.modals.loaded}/${counts.modals.total} modals`
       );
     }
 
@@ -133,12 +136,24 @@ export default class Client {
         }
       } else if (interaction.isButton()) {
         for (const button of this.buttons.values()) {
-          const params = matchButton(button.customId, interaction.customId);
+          const params = matchCustomId(button.customId, interaction.customId);
           if (params !== null) {
             try {
               await button.execute(interaction, params);
             } catch (err: unknown) {
               logger.error(`Error in button "${button.customId}":`, err);
+            }
+            break;
+          }
+        }
+      } else if (interaction.isModalSubmit()) {
+        for (const modal of this.modals.values()) {
+          const params = matchCustomId(modal.customId, interaction.customId);
+          if (params !== null) {
+            try {
+              await modal.execute(interaction, params);
+            } catch (err: unknown) {
+              logger.error(`Error in modal "${modal.customId}":`, err);
             }
             break;
           }

@@ -2,7 +2,8 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
   ClientEvents,
-  ButtonInteraction
+  ButtonInteraction,
+  ModalSubmitInteraction,
 } from "discord.js";
 
 export interface Command {
@@ -19,6 +20,14 @@ export interface Button {
   customId: string; // supports ":param" segments, e.g. "delete/:itemId"
   execute: (
     interaction: ButtonInteraction,
+    params: Record<string, string>
+  ) => Promise<void>;
+}
+
+export interface Modal {
+  customId: string; // supports ":param" segments, e.g. "confirm/:action"
+  execute: (
+    interaction: ModalSubmitInteraction,
     params: Record<string, string>
   ) => Promise<void>;
 }

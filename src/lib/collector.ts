@@ -1,7 +1,7 @@
 import path from "path";
 import { scanDirectory } from "./scanner.js";
 import logger from "./logger.js";
-import type { Command, Event, Button } from "../types.js";
+import type { Command, Event, Button, Modal } from "../types.js";
 
 export async function collectCommands(dir: string): Promise<{
   total: number;
@@ -84,32 +84,64 @@ export async function collectButtons(dir: string): Promise<{
   return { total: files.length, loaded, buttons };
 }
 
+export async function collectModals(dir: string): Promise<{
+  total: number;
+  loaded: number;
+  modals: Map<string, Modal>;
+}> {
+  const modals = new Map<string, Modal>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
+
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const modal = (mod.default ?? mod.modal) as Modal | undefined;
+      if (!modal?.customId || !modal?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing customId or execute`);
+        continue;
+      }
+      modals.set(modal.customId, modal);
+      loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load modal ${file.relativePath}:`, err);
+    }
+  }
+
+  return { total: files.length, loaded, modals };
+}
+
 export interface CollectAllResult {
   commands: Map<string, Command>;
   events: Map<string, Event>;
   buttons: Map<string, Button>;
+  modals: Map<string, Modal>;
   counts: {
     commands: { total: number; loaded: number };
     events: { total: number; loaded: number };
     buttons: { total: number; loaded: number };
+    modals: { total: number; loaded: number };
   };
 }
 
 export async function collectAll(appDir: string): Promise<CollectAllResult> {
-  const [cmdResult, evtResult, btnResult] = await Promise.all([
+  const [cmdResult, evtResult, btnResult, modResult] = await Promise.all([
     collectCommands(path.join(appDir, "commands")),
     collectEvents(path.join(appDir, "events")),
     collectButtons(path.join(appDir, "buttons")),
+    collectModals(path.join(appDir, "modals")),
   ]);
 
   return {
     commands: cmdResult.commands,
     events: evtResult.events,
     buttons: btnResult.buttons,
+    modals: modResult.modals,
     counts: {
       commands: { total: cmdResult.total, loaded: cmdResult.loaded },
       events: { total: evtResult.total, loaded: evtResult.loaded },
       buttons: { total: btnResult.total, loaded: btnResult.loaded },
+      modals: { total: modResult.total, loaded: modResult.loaded },
     },
   };
 }

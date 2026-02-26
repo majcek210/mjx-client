@@ -1,4 +1,4 @@
-export function matchButton(
+export function matchCustomId(
   pattern: string,
   customId: string
 ): Record<string, string> | null {

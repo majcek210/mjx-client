@@ -23,6 +23,13 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Discord Notification
+        uses: sarisia/actions-status-discord@v1
+        if: always()
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "Publish — Build"
+
   publish-npm:
     needs: build
     runs-on: ubuntu-latest
@@ -42,6 +49,13 @@ jobs:
           path: dist/
 
       - run: npm publish --provenance --access public
+
+      - name: Discord Notification
+        uses: sarisia/actions-status-discord@v1
+        if: always()
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "Publish — npm"
 
   publish-gpr:
     needs: build
@@ -68,3 +82,10 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Discord Notification
+        uses: sarisia/actions-status-discord@v1
+        if: always()
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "Publish — GitHub Packages"

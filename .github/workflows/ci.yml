@@ -23,3 +23,10 @@ jobs:
 
       - name: Build tests
         run: npm run build:tests
+
+      - name: Discord Notification
+        uses: sarisia/actions-status-discord@v1
+        if: always()
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "CI — Build"

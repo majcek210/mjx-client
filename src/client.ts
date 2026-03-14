@@ -66,6 +66,7 @@ export default class Client {
   }
 
   setClientId(id: string): this {
+    this.ensureMutable();
     this.clientId = id;
     return this;
   }
@@ -129,7 +130,18 @@ export default class Client {
     });
 
     this._discord.on("interactionCreate", async (interaction: Interaction) => {
-      if (interaction.isChatInputCommand()) {
+      if (interaction.isAutocomplete()) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command?.autocomplete) {
+          if (this._debug) logger.warn(`No autocomplete handler for "${interaction.commandName}"`);
+          return;
+        }
+        try {
+          await command.autocomplete(interaction);
+        } catch (err: unknown) {
+          logger.error(`Error in autocomplete "${interaction.commandName}":`, err);
+        }
+      } else if (interaction.isChatInputCommand()) {
         const command = this.commands.get(interaction.commandName);
         if (!command) return;
         try {
@@ -138,37 +150,37 @@ export default class Client {
           logger.error(`Error in command "${interaction.commandName}":`, err);
         }
       } else if (interaction.isButton()) {
-        for (const button of this.buttons.values()) {
-          const params = matchCustomId(button.customId, interaction.customId);
+        for (const [customId, button] of this.buttons) {
+          const params = matchCustomId(customId, interaction.customId);
           if (params !== null) {
             try {
               await button.execute(interaction, params);
             } catch (err: unknown) {
-              logger.error(`Error in button "${button.customId}":`, err);
+              logger.error(`Error in button "${customId}":`, err);
             }
             break;
           }
         }
       } else if (interaction.isModalSubmit()) {
-        for (const modal of this.modals.values()) {
-          const params = matchCustomId(modal.customId, interaction.customId);
+        for (const [customId, modal] of this.modals) {
+          const params = matchCustomId(customId, interaction.customId);
           if (params !== null) {
             try {
               await modal.execute(interaction, params);
             } catch (err: unknown) {
-              logger.error(`Error in modal "${modal.customId}":`, err);
+              logger.error(`Error in modal "${customId}":`, err);
             }
             break;
           }
         }
       } else if (interaction.isAnySelectMenu()) {
-        for (const menu of this.selectMenus.values()) {
-          const params = matchCustomId(menu.customId, interaction.customId);
+        for (const [customId, menu] of this.selectMenus) {
+          const params = matchCustomId(customId, interaction.customId);
           if (params !== null) {
             try {
               await menu.execute(interaction, params);
             } catch (err: unknown) {
-              logger.error(`Error in select menu "${menu.customId}":`, err);
+              logger.error(`Error in select menu "${customId}":`, err);
             }
             break;
           }

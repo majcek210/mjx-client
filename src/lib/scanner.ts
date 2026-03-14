@@ -21,7 +21,7 @@ function walkDir(rootDir: string, currentDir: string, results: ScannedFile[]): v
     const fullPath = path.join(currentDir, entry.name);
     if (entry.isDirectory()) {
       walkDir(rootDir, fullPath, results);
-    } else if (entry.isFile() && entry.name.endsWith(".js")) {
+    } else if (entry.isFile() && entry.name === "index.js") {
       results.push({
         absolutePath: fullPath,
         relativePath: path.relative(rootDir, fullPath),

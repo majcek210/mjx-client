@@ -1,8 +1,9 @@
 import path from "path";
+import { pathToFileURL } from "url";
 import { SlashCommandBuilder } from "discord.js";
 import { scanDirectory } from "./scanner.js";
 import logger from "./logger.js";
-import type { Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGroup } from "../types.js";
+import type { Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGroup, ErrorHandler } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Path → customId helpers
@@ -306,6 +307,7 @@ export interface CollectAllResult {
   buttons: Map<string, Button>;
   modals: Map<string, Modal>;
   selectMenus: Map<string, SelectMenu>;
+  errorHandler: ErrorHandler | undefined;
   counts: {
     commands: { total: number; loaded: number };
     events: { total: number; loaded: number };
@@ -315,13 +317,37 @@ export interface CollectAllResult {
   };
 }
 
+/** Tries to load `{appDir}/error.js` as an ErrorHandler.
+ *  Returns undefined silently if the file doesn't exist.
+ *  Logs a warning if the file exists but is missing `execute`.
+ */
+export async function collectErrorHandler(appDir: string): Promise<ErrorHandler | undefined> {
+  const errorFile = path.join(appDir, "error.js");
+  const errorUrl = pathToFileURL(errorFile).href;
+  try {
+    const mod = await import(errorUrl) as Record<string, unknown>;
+    const handler = (mod.default ?? mod.errorHandler) as Partial<ErrorHandler> | undefined;
+    if (!handler?.execute) {
+      logger.warn("error.ts found but missing execute function — skipping");
+      return undefined;
+    }
+    return handler as ErrorHandler;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ERR_MODULE_NOT_FOUND") {
+      logger.error("Failed to load error handler:", err);
+    }
+    return undefined;
+  }
+}
+
 export async function collectAll(appDir: string): Promise<CollectAllResult> {
-  const [cmdResult, evtResult, btnResult, modResult, selResult] = await Promise.all([
+  const [cmdResult, evtResult, btnResult, modResult, selResult, errorHandler] = await Promise.all([
     collectCommands(path.join(appDir, "commands")),
     collectEvents(path.join(appDir, "events")),
     collectButtons(path.join(appDir, "buttons")),
     collectModals(path.join(appDir, "modals")),
     collectSelectMenus(path.join(appDir, "select-menus")),
+    collectErrorHandler(appDir),
   ]);
 
   return {
@@ -330,6 +356,7 @@ export async function collectAll(appDir: string): Promise<CollectAllResult> {
     buttons: btnResult.buttons,
     modals: modResult.modals,
     selectMenus: selResult.selectMenus,
+    errorHandler,
     counts: {
       commands: { total: cmdResult.total, loaded: cmdResult.loaded },
       events: { total: evtResult.total, loaded: evtResult.loaded },

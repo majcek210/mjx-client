@@ -135,4 +135,4 @@ Builder methods (`setName`, `setDebug`, `setClientId`, `setLoginTimeout`) must b
 
 ## License
 
-ISC
+MIT

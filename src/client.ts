@@ -28,6 +28,8 @@ type ClientOptions = {
   debug?: boolean;
   /** Gateway intents to request. Defaults to `[Guilds, GuildMessages, MessageContent]`. */
   intents?: GatewayIntentBits[];
+  /** Bot token. Same as calling {@link Client.setToken}. */
+  token?: string | undefined;
 };
 
 /** Guards and cooldown of one handler, with the name its cooldown is tracked under. */
@@ -56,10 +58,11 @@ export * from "./guards.js";
  *
  * const client = new Client({ debug: true })
  *   .setName("My Bot")
+ *   .setToken(process.env.MY_BOT_TOKEN)
  *   .setLoginTimeout(15_000);
  *
  * await client.use(new URL("./app", import.meta.url));
- * await client.start(process.env.DISCORD_TOKEN);
+ * await client.start();
  * await client.pushCommands();
  * ```
  */
@@ -82,10 +85,12 @@ export default class Client {
   private middlewares: Middleware[] = [];
   private cooldowns = new Map<string, number>();
   private _loginTimeout: number | undefined = undefined;
+  private _token: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
     this._name = options.name ?? "Unnamed Client";
     this._debug = options.debug ?? false;
+    if ("token" in options) this.setToken(options.token);
 
     this._discord = new DiscordClient({
       intents: options.intents ?? [
@@ -128,6 +133,27 @@ export default class Client {
   setClientId(id: string): this {
     this.ensureMutable();
     this.clientId = id;
+    return this;
+  }
+
+  /**
+   * Set the bot token used by {@link start} and {@link pushCommands}, so it doesn't
+   * have to be passed to each. Takes the value straight from whichever env var you
+   * use; without it the client falls back to `TOKEN`, then `DISCORD_TOKEN`.
+   *
+   * @example
+   * ```ts
+   * new Client().setToken(process.env.MY_BOT_TOKEN);
+   * ```
+   * @throws If the value is empty, which usually means the env var isn't set.
+   *   Also if called after `start()`.
+   */
+  setToken(token: string | undefined): this {
+    this.ensureMutable();
+    if (!token) {
+      throw new Error("setToken() got an empty value. Is the env var set?");
+    }
+    this._token = token;
     return this;
   }
 
@@ -242,7 +268,8 @@ export default class Client {
    * Log in to Discord and begin handling interactions and events.
    * Call {@link use} first to load your handlers.
    *
-   * @param token - Bot token. Falls back to `TOKEN` then `DISCORD_TOKEN` env vars.
+   * @param token - Bot token. Falls back to {@link setToken}, then the `TOKEN` and
+   *   `DISCORD_TOKEN` env vars.
    * @returns `this` for chaining.
    * @throws If already started, if no token is found, or if login times out (when
    *   {@link setLoginTimeout} is set).
@@ -294,7 +321,8 @@ export default class Client {
    * Works before or after {@link start}. The application ID comes from
    * {@link setClientId}, the logged-in client, or a lookup with the token.
    *
-   * @param token - Bot token. Falls back to `TOKEN` then `DISCORD_TOKEN` env vars.
+   * @param token - Bot token. Falls back to {@link setToken}, then the `TOKEN` and
+   *   `DISCORD_TOKEN` env vars.
    * @param guildId - Guild ID for guild-scoped registration. Omit for global.
    * @throws If no token is found or if the application ID can't be resolved.
    */
@@ -343,9 +371,11 @@ export default class Client {
   }
 
   private resolveToken(token?: string): string {
-    const resolved = token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
+    const resolved = token ?? this._token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
     if (!resolved) {
-      throw new Error("No token provided. Pass one or set the TOKEN or DISCORD_TOKEN env var.");
+      throw new Error(
+        "No token provided. Pass one, call setToken(), or set the TOKEN or DISCORD_TOKEN env var."
+      );
     }
     return resolved;
   }

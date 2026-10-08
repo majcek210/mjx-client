@@ -21,12 +21,16 @@ install discord.js separately.
 ```ts
 import Client from "mjx-client";
 
-const client = new Client({ debug: true }).setName("My Bot");
+const client = new Client({ debug: true })
+  .setName("My Bot")
+  .setToken(process.env.MY_BOT_TOKEN);               // any env var you like
 
 await client.use(new URL("./app", import.meta.url)); // load handlers
-await client.start(process.env.DISCORD_TOKEN);       // log in
+await client.start();                                // log in
 await client.pushCommands();                         // register commands with Discord
 ```
+
+There is a complete small bot in [`example/`](example).
 
 A few things this snippet relies on:
 
@@ -37,8 +41,11 @@ A few things this snippet relies on:
   you start the bot from. `new URL("./app", import.meta.url)` is resolved next to the file
   that calls it, so the same line works from `src/` under tsx and from `dist/` after `tsc`.
   If the directory doesn't exist, `use()` logs a warning and loads nothing.
-- **The token** can be passed to `start()` and `pushCommands()`. Without an argument both
-  read the `TOKEN` env var, then `DISCORD_TOKEN`.
+- **The token** comes from wherever you keep it. `setToken(process.env.MY_BOT_TOKEN)` sets
+  it once for both `start()` and `pushCommands()`, and throws straight away if the variable
+  is empty. You can also pass a token to either call. With neither, both read the `TOKEN`
+  env var, then `DISCORD_TOKEN`. mjx-client doesn't load `.env` files; use
+  `node --env-file=.env` or dotenv.
 - **The application ID** for `pushCommands()` is taken from the logged-in client, or looked
   up with the token when you call it before `start()`. Call `setClientId()` only if you want
   to skip that lookup.
@@ -295,9 +302,10 @@ the interaction was deferred.
 
 | Method | Description |
 |--------|-------------|
-| `new Client(options?)` | Create a client. Options: `name`, `debug`, `intents` |
+| `new Client(options?)` | Create a client. Options: `name`, `debug`, `intents`, `token` |
 | `.setName(name)` | Set the bot display name (min 3 chars) |
 | `.setDebug(enabled)` | Toggle debug logging |
+| `.setToken(token)` | Set the bot token for `start()` and `pushCommands()` |
 | `.setClientId(id)` | Set the application ID instead of having it looked up |
 | `.setLoginTimeout(ms)` | Reject login if it takes longer than `ms` |
 | `.use(appDir)` | Load handlers from an app directory (path or `file:` URL). Can be called more than once |
@@ -306,7 +314,8 @@ the interaction was deferred.
 | `.pushCommands(token?, guildId?)` | Register slash commands and context menus via REST |
 | `.discord` | The underlying discord.js `Client` |
 
-`setName`, `setDebug`, `setClientId` and `setLoginTimeout` must be called before `start()`.
+`setName`, `setDebug`, `setToken`, `setClientId` and `setLoginTimeout` must be called before
+`start()`.
 
 The default intents are `Guilds`, `GuildMessages` and `MessageContent`. `MessageContent` is
 privileged and has to be enabled for the bot in the Discord developer portal; pass your own

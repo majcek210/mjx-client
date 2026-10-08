@@ -1,9 +1,12 @@
 import path from "path";
 import { pathToFileURL } from "url";
-import { SlashCommandBuilder } from "discord.js";
-import { scanDirectory } from "./scanner.js";
+import { ApplicationCommandType, SlashCommandBuilder } from "discord.js";
+import { findModule, scanDirectory } from "./scanner.js";
 import logger from "./logger.js";
-import type { Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGroup, ErrorHandler } from "../types.js";
+import type {
+  Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGroup, ContextMenu,
+  ErrorHandler, Middleware,
+} from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Path → customId helpers
@@ -13,7 +16,7 @@ import type { Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGrou
  *
  *  Transforms applied in order:
  *    1. Normalise Windows separators
- *    2. Strip .js extension
+ *    2. Strip the file extension (.js, .mjs, .ts, ...)
  *    3. Strip trailing /index  (leaf filename)
  *    4. Strip (group)/ segments (transparent organisational folders)
  *    5. [...rest] → ...rest   (catch-all segment)
@@ -25,7 +28,7 @@ import type { Command, Event, Button, Modal, SelectMenu, Subcommand, CommandGrou
 function pathToCustomId(relativePath: string): string {
   return relativePath
     .replace(/\\/g, "/")
-    .replace(/\.js$/, "")
+    .replace(/\.[cm]?[jt]s$/, "")
     .replace(/\/index$/, "")
     .replace(/\([^)]+\)\//g, "")
     .replace(/\[\.\.\.([^\]]+)\]/g, "...$1")
@@ -168,7 +171,7 @@ export async function collectCommands(dir: string): Promise<{
   const subcommandParents = new Set(depth3.map(({ lp }) => lp[0]!));
 
   // --- Regular commands & optional group metadata (depth 2) ---
-  const parentDescriptions = new Map<string, string>();
+  const parentGroups = new Map<string, Partial<CommandGroup>>();
 
   for (const { file, lp } of depth2) {
     const folderName = lp[0]!;
@@ -177,9 +180,9 @@ export async function collectCommands(dir: string): Promise<{
       const exported = mod.default ?? mod.command;
 
       if (subcommandParents.has(folderName)) {
-        // Treat as CommandGroup metadata (description only)
+        // Treat as CommandGroup metadata (description, plus guards/cooldown for every subcommand)
         const group = exported as Partial<CommandGroup> | undefined;
-        parentDescriptions.set(folderName, group?.description ?? `${folderName} commands`);
+        if (group) parentGroups.set(folderName, group);
       } else {
         const command = exported as Partial<Command> | undefined;
         if (!command?.data || !command?.execute) {
@@ -203,7 +206,8 @@ export async function collectCommands(dir: string): Promise<{
   }
 
   for (const [parentFolder, subs] of subsByParent) {
-    const description = parentDescriptions.get(parentFolder) ?? `${parentFolder} commands`;
+    const group = parentGroups.get(parentFolder);
+    const description = group?.description ?? `${parentFolder} commands`;
     const builder = new SlashCommandBuilder()
       .setName(parentFolder)
       .setDescription(description);
@@ -229,7 +233,10 @@ export async function collectCommands(dir: string): Promise<{
     const hasAutocomplete = [...subHandlers.values()].some(s => s.autocomplete);
 
     const command: Command = {
-      data: builder as unknown as Command["data"],
+      data: builder,
+      subcommands: subHandlers,
+      ...(group?.guards ? { guards: group.guards } : {}),
+      ...(group?.cooldown !== undefined ? { cooldown: group.cooldown } : {}),
       async execute(interaction) {
         const subName = interaction.options.getSubcommand();
         const handler = subHandlers.get(subName);
@@ -251,6 +258,44 @@ export async function collectCommands(dir: string): Promise<{
   }
 
   return { total: files.length, loaded, commands };
+}
+
+/** Key for a context menu in the client's collection. A user menu and a message
+ *  menu may share a name on Discord, so the name alone isn't unique.
+ */
+export function contextMenuKey(type: ApplicationCommandType, name: string): string {
+  return `${type === ApplicationCommandType.User ? "user" : "message"}:${name}`;
+}
+
+export async function collectContextMenus(dir: string): Promise<{
+  total: number;
+  loaded: number;
+  contextMenus: Map<string, ContextMenu>;
+}> {
+  const contextMenus = new Map<string, ContextMenu>();
+  const files = scanDirectory(dir);
+  let loaded = 0;
+
+  for (const file of files) {
+    try {
+      const mod = await import(file.fileUrl) as Record<string, unknown>;
+      const menu = (mod.default ?? mod.contextMenu) as Partial<ContextMenu> | undefined;
+      if (!menu?.data || !menu?.execute) {
+        logger.warn(`Skipping ${file.relativePath}: missing data or execute`);
+        continue;
+      }
+      if (menu.data.type === undefined) {
+        logger.warn(`Skipping ${file.relativePath}: call setType() on the ContextMenuCommandBuilder`);
+        continue;
+      }
+      contextMenus.set(contextMenuKey(menu.data.type, menu.data.name), menu as ContextMenu);
+      loaded++;
+    } catch (err: unknown) {
+      logger.error(`Failed to load context menu ${file.relativePath}:`, err);
+    }
+  }
+
+  return { total: files.length, loaded, contextMenus };
 }
 
 export async function collectEvents(dir: string): Promise<{
@@ -307,9 +352,12 @@ export interface CollectAllResult {
   buttons: Map<string, Button>;
   modals: Map<string, Modal>;
   selectMenus: Map<string, SelectMenu>;
+  contextMenus: Map<string, ContextMenu>;
   errorHandler: ErrorHandler | undefined;
+  middleware: Middleware[];
   counts: {
     commands: { total: number; loaded: number };
+    contextMenus: { total: number; loaded: number };
     events: { total: number; loaded: number };
     buttons: { total: number; loaded: number };
     modals: { total: number; loaded: number };
@@ -322,10 +370,10 @@ export interface CollectAllResult {
  *  Logs a warning if the file exists but is missing `execute`.
  */
 export async function collectErrorHandler(appDir: string): Promise<ErrorHandler | undefined> {
-  const errorFile = path.join(appDir, "error.js");
-  const errorUrl = pathToFileURL(errorFile).href;
+  const errorFile = findModule(appDir, "error");
+  if (!errorFile) return undefined;
   try {
-    const mod = await import(errorUrl) as Record<string, unknown>;
+    const mod = await import(pathToFileURL(errorFile).href) as Record<string, unknown>;
     const handler = (mod.default ?? mod.errorHandler) as Partial<ErrorHandler> | undefined;
     if (!handler?.execute) {
       logger.warn("error.ts found but missing execute function — skipping");
@@ -333,22 +381,44 @@ export async function collectErrorHandler(appDir: string): Promise<ErrorHandler 
     }
     return handler as ErrorHandler;
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== "ERR_MODULE_NOT_FOUND") {
-      logger.error("Failed to load error handler:", err);
-    }
+    logger.error("Failed to load error handler:", err);
     return undefined;
   }
 }
 
+/** Tries to load `{appDir}/middleware.js`. The default (or named `middleware`) export
+ *  is one middleware function or an array of them, run in array order.
+ */
+export async function collectMiddleware(appDir: string): Promise<Middleware[]> {
+  const file = findModule(appDir, "middleware");
+  if (!file) return [];
+  try {
+    const mod = await import(pathToFileURL(file).href) as Record<string, unknown>;
+    const exported = mod.default ?? mod.middleware;
+    const list = Array.isArray(exported) ? exported : [exported];
+    if (list.length === 0 || list.some(fn => typeof fn !== "function")) {
+      logger.warn("middleware.ts found but its export isn't a function or an array of functions — skipping");
+      return [];
+    }
+    return list as Middleware[];
+  } catch (err: unknown) {
+    logger.error("Failed to load middleware:", err);
+    return [];
+  }
+}
+
 export async function collectAll(appDir: string): Promise<CollectAllResult> {
-  const [cmdResult, evtResult, btnResult, modResult, selResult, errorHandler] = await Promise.all([
-    collectCommands(path.join(appDir, "commands")),
-    collectEvents(path.join(appDir, "events")),
-    collectButtons(path.join(appDir, "buttons")),
-    collectModals(path.join(appDir, "modals")),
-    collectSelectMenus(path.join(appDir, "select-menus")),
-    collectErrorHandler(appDir),
-  ]);
+  const [cmdResult, evtResult, btnResult, modResult, selResult, ctxResult, errorHandler, middleware] =
+    await Promise.all([
+      collectCommands(path.join(appDir, "commands")),
+      collectEvents(path.join(appDir, "events")),
+      collectButtons(path.join(appDir, "buttons")),
+      collectModals(path.join(appDir, "modals")),
+      collectSelectMenus(path.join(appDir, "select-menus")),
+      collectContextMenus(path.join(appDir, "context-menus")),
+      collectErrorHandler(appDir),
+      collectMiddleware(appDir),
+    ]);
 
   return {
     commands: cmdResult.commands,
@@ -356,9 +426,12 @@ export async function collectAll(appDir: string): Promise<CollectAllResult> {
     buttons: btnResult.buttons,
     modals: modResult.modals,
     selectMenus: selResult.selectMenus,
+    contextMenus: ctxResult.contextMenus,
     errorHandler,
+    middleware,
     counts: {
       commands: { total: cmdResult.total, loaded: cmdResult.loaded },
+      contextMenus: { total: ctxResult.total, loaded: ctxResult.loaded },
       events: { total: evtResult.total, loaded: evtResult.loaded },
       buttons: { total: btnResult.total, loaded: btnResult.loaded },
       modals: { total: modResult.total, loaded: modResult.loaded },

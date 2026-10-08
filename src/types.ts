@@ -1,14 +1,70 @@
 import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
+  SlashCommandOptionsOnlyBuilder,
   SlashCommandSubcommandBuilder,
+  SlashCommandSubcommandsOnlyBuilder,
   ClientEvents,
   ButtonInteraction,
   ModalSubmitInteraction,
   AnySelectMenuInteraction,
   AutocompleteInteraction,
+  ContextMenuCommandBuilder,
+  ContextMenuCommandInteraction,
   Interaction,
 } from "discord.js";
+import type Client from "./client.js";
+
+/** Interaction types that guards and cooldowns can run against. */
+export type GuardInteraction =
+  | ChatInputCommandInteraction
+  | ContextMenuCommandInteraction
+  | ButtonInteraction
+  | ModalSubmitInteraction
+  | AnySelectMenuInteraction;
+
+/**
+ * A check that runs before a handler's `execute`.
+ * Return `true` to allow the interaction. Return `false` to deny it with the
+ * default message, or a string to deny it with that message. The denial is sent
+ * as an ephemeral reply and `execute` is not called.
+ *
+ * @example
+ * ```ts
+ * const staffOnly: Guard = (interaction) =>
+ *   (interaction.inCachedGuild() && interaction.member.roles.cache.has(STAFF_ROLE))
+ *     || "Staff only.";
+ * ```
+ */
+export type Guard<I extends GuardInteraction = GuardInteraction> = (
+  interaction: I
+) => boolean | string | Promise<boolean | string>;
+
+/** What a cooldown is tracked per. Defaults to `"user"`. */
+export type CooldownScope = "user" | "guild" | "channel" | "global";
+
+export interface CooldownOptions {
+  /** Cooldown length in milliseconds. */
+  duration: number;
+  /** What the cooldown is tracked per. Defaults to `"user"`. */
+  scope?: CooldownScope;
+  /**
+   * Reply sent while the cooldown is active. A function receives the remaining
+   * time in milliseconds. Defaults to a message with a relative timestamp.
+   */
+  message?: string | ((remainingMs: number) => string);
+}
+
+/** A cooldown in milliseconds, or an options object for a scope or custom message. */
+export type Cooldown = number | CooldownOptions;
+
+/** Fields shared by every handler that supports guards and cooldowns. */
+export interface HandlerOptions<I extends GuardInteraction> {
+  /** Checks run in order before `execute`. The first one that denies stops the chain. */
+  guards?: Guard<I>[];
+  /** Minimum time between uses. Starts when the guards pass, before `execute` runs. */
+  cooldown?: Cooldown;
+}
 
 /**
  * A top-level slash command.
@@ -23,13 +79,18 @@ import {
  * } satisfies Command;
  * ```
  */
-export interface Command {
-  /** Slash command definition built with `SlashCommandBuilder`. */
-  data: Omit<SlashCommandBuilder, "addSubcommand" | "addSubcommandGroup">;
+export interface Command extends HandlerOptions<ChatInputCommandInteraction> {
+  /** Slash command definition built with `SlashCommandBuilder`, with or without options. */
+  data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder | SlashCommandSubcommandsOnlyBuilder;
   /** Called when a user runs this command. */
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
   /** Called when Discord requests autocomplete suggestions for an option on this command. */
   autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
+  /**
+   * Subcommand handlers by name. Set by the loader on commands built from a
+   * subcommand folder; leave it out of your own command files.
+   */
+  subcommands?: Map<string, Subcommand>;
 }
 
 /**
@@ -47,7 +108,7 @@ export interface Command {
  * } satisfies Subcommand;
  * ```
  */
-export interface Subcommand {
+export interface Subcommand extends HandlerOptions<ChatInputCommandInteraction> {
   /** Subcommand definition built with `SlashCommandSubcommandBuilder`. */
   data: SlashCommandSubcommandBuilder;
   /** Called when a user runs this subcommand. */
@@ -67,9 +128,41 @@ export interface Subcommand {
  * export default { description: "Adjust bot settings" } satisfies CommandGroup;
  * ```
  */
-export interface CommandGroup {
+export interface CommandGroup extends HandlerOptions<ChatInputCommandInteraction> {
   /** Description shown in Discord for the parent slash command. */
   description: string;
+}
+
+/**
+ * A user or message context menu command (right click, then Apps).
+ * Place at `context-menus/<name>/index.ts`. The command name comes from `data`,
+ * not the folder.
+ *
+ * @example
+ * ```ts
+ * // context-menus/report/index.ts
+ * export default {
+ *   data: new ContextMenuCommandBuilder()
+ *     .setName("Report message")
+ *     .setType(ApplicationCommandType.Message),
+ *   async execute(interaction) {
+ *     if (!interaction.isMessageContextMenuCommand()) return;
+ *     await interaction.reply({
+ *       content: `Reported ${interaction.targetMessage.url}`,
+ *       flags: MessageFlags.Ephemeral,
+ *     });
+ *   },
+ * } satisfies ContextMenu;
+ * ```
+ */
+export interface ContextMenu extends HandlerOptions<ContextMenuCommandInteraction> {
+  /** Context menu definition built with `ContextMenuCommandBuilder`. */
+  data: ContextMenuCommandBuilder;
+  /**
+   * Called when a user picks this entry. Narrow with `isUserContextMenuCommand()`
+   * or `isMessageContextMenuCommand()` to reach `targetUser` or `targetMessage`.
+   */
+  execute: (interaction: ContextMenuCommandInteraction) => Promise<void>;
 }
 
 /**
@@ -114,7 +207,7 @@ export interface Event<K extends keyof ClientEvents = keyof ClientEvents> {
  * } satisfies Button;
  * ```
  */
-export interface Button {
+export interface Button extends HandlerOptions<ButtonInteraction> {
   /**
    * Explicit customId pattern. If omitted, derived from the file path.
    * Supports `:param` for dynamic segments and `...rest` for catch-alls.
@@ -148,7 +241,7 @@ export interface Button {
  * } satisfies Modal;
  * ```
  */
-export interface Modal {
+export interface Modal extends HandlerOptions<ModalSubmitInteraction> {
   /**
    * Explicit customId pattern. If omitted, derived from the file path.
    * Supports `:param` for dynamic segments and `...rest` for catch-alls.
@@ -184,7 +277,7 @@ export interface Modal {
  * } satisfies SelectMenu;
  * ```
  */
-export interface SelectMenu {
+export interface SelectMenu extends HandlerOptions<AnySelectMenuInteraction> {
   /**
    * Explicit customId pattern. If omitted, derived from the file path.
    * Supports `:param` for dynamic segments and `...rest` for catch-alls.
@@ -207,8 +300,12 @@ export interface SelectMenu {
  *
  * `execute` is the universal fallback called for every interaction type.
  * Define a per-type method to override the behaviour for that specific type.
- * After your handler runs, if the interaction has not been replied to, the
- * framework sends a default ephemeral `"An error occurred."` reply automatically.
+ * After your handler runs, if the interaction still has no response, the framework
+ * sends an ephemeral `"An error occurred."` itself: a reply, or a follow-up when
+ * the interaction was deferred.
+ *
+ * The failing handler may have replied or deferred before it threw, so check both
+ * `replied` and `deferred` before calling `reply()`.
  *
  * @example
  * ```ts
@@ -218,7 +315,9 @@ export interface SelectMenu {
  *     console.error(error);
  *   },
  *   async command(interaction, error) {
- *     await interaction.reply({ content: "Command failed.", ephemeral: true });
+ *     const message = { content: "Command failed.", flags: MessageFlags.Ephemeral } as const;
+ *     if (interaction.replied || interaction.deferred) await interaction.followUp(message);
+ *     else await interaction.reply(message);
  *   },
  * } satisfies ErrorHandler;
  * ```
@@ -244,6 +343,12 @@ export interface ErrorHandler {
    */
   autocomplete?: (interaction: AutocompleteInteraction, error: unknown) => void | Promise<void>;
   /**
+   * Override for context menu errors. Receives a `ContextMenuCommandInteraction`.
+   * @param interaction - The context menu interaction.
+   * @param error - The thrown value.
+   */
+  contextMenu?: (interaction: ContextMenuCommandInteraction, error: unknown) => void | Promise<void>;
+  /**
    * Override for button errors. Receives a `ButtonInteraction`.
    * @param interaction - The button interaction.
    * @param error - The thrown value.
@@ -262,3 +367,52 @@ export interface ErrorHandler {
    */
   selectMenu?: (interaction: AnySelectMenuInteraction, error: unknown) => void | Promise<void>;
 }
+
+/** Which kind of handler an interaction was routed to. */
+export type HandlerKind =
+  | "command"
+  | "autocomplete"
+  | "contextMenu"
+  | "button"
+  | "modal"
+  | "selectMenu";
+
+/** Passed to every {@link Middleware}. */
+export interface MiddlewareContext {
+  /** The interaction being handled. */
+  interaction: GuardInteraction | AutocompleteInteraction;
+  /** Which kind of handler it was routed to. */
+  kind: HandlerKind;
+  /**
+   * The matched handler: the command name (`"settings volume"` for a subcommand),
+   * the context menu name, or the customId pattern for components and modals.
+   */
+  name: string;
+  /** Dynamic segments captured from the customId. Empty for commands. */
+  params: Record<string, string>;
+  /** The mjx-client instance. */
+  client: Client;
+}
+
+/**
+ * Runs around every routed interaction, before guards and cooldowns.
+ * Call `next()` to continue; return without calling it to stop the interaction
+ * there. Anything thrown goes to the error handler.
+ *
+ * Register with `client.middleware(fn)` or export from `{appDir}/middleware.ts`.
+ *
+ * @example
+ * ```ts
+ * // app/middleware.ts
+ * const timing: Middleware = async (ctx, next) => {
+ *   const started = Date.now();
+ *   await next();
+ *   console.log(`${ctx.kind} ${ctx.name} took ${Date.now() - started}ms`);
+ * };
+ * export default [timing];
+ * ```
+ */
+export type Middleware = (
+  ctx: MiddlewareContext,
+  next: () => Promise<void>
+) => void | Promise<void>;

@@ -1,18 +1,24 @@
+import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import {
   Client as DiscordClient,
   GatewayIntentBits,
   Collection,
   Events,
+  MessageFlags,
+  REST,
   Routes,
   Interaction,
 } from "discord.js";
-import { collectAll } from "./lib/collector.js";
+import { collectAll, contextMenuKey } from "./lib/collector.js";
 import { matchCustomId } from "./lib/router.js";
 import logger from "./lib/logger.js";
-import { REST } from "@discordjs/rest";
 
-import type { Command, Event, Button, Modal, SelectMenu, ErrorHandler } from "./types.js";
+import type {
+  Command, Event, Button, Modal, SelectMenu, ContextMenu, ErrorHandler,
+  Cooldown, Guard, GuardInteraction, Middleware, MiddlewareContext,
+} from "./types.js";
 
 /** Options passed to the {@link Client} constructor. */
 type ClientOptions = {
@@ -22,16 +28,29 @@ type ClientOptions = {
   debug?: boolean;
   /** Gateway intents to request. Defaults to `[Guilds, GuildMessages, MessageContent]`. */
   intents?: GatewayIntentBits[];
+  /** Bot token. Same as calling {@link Client.setToken}. */
+  token?: string | undefined;
 };
 
+/** Guards and cooldown of one handler, with the name its cooldown is tracked under. */
+type Limits = {
+  key: string;
+  guards?: Guard<never>[] | undefined;
+  cooldown?: Cooldown | undefined;
+};
+
+const DEFAULT_DENIAL = "You can't use this.";
+// Expired cooldown entries are only dropped once the map grows past this.
+const COOLDOWN_SWEEP_SIZE = 1000;
+
 export * from "discord.js";
-export { REST };
 export * from "./types.js";
+export * from "./guards.js";
 
 /**
  * The main mjx-client bot client.
- * Wraps discord.js `Client` with file-based routing for commands, events,
- * buttons, modals, and select menus.
+ * Wraps discord.js `Client` with file-based routing for commands, context menus,
+ * events, buttons, modals, and select menus.
  *
  * @example
  * ```ts
@@ -39,10 +58,11 @@ export * from "./types.js";
  *
  * const client = new Client({ debug: true })
  *   .setName("My Bot")
+ *   .setToken(process.env.MY_BOT_TOKEN)
  *   .setLoginTimeout(15_000);
  *
- * await client.use("./dist/app");
- * await client.start(process.env.TOKEN);
+ * await client.use(new URL("./app", import.meta.url));
+ * await client.start();
  * await client.pushCommands();
  * ```
  */
@@ -53,6 +73,8 @@ export default class Client {
   private _discord: DiscordClient;
 
   public commands: Collection<string, Command> = new Collection();
+  /** Keyed by `"user:<name>"` or `"message:<name>"`. */
+  public contextMenus: Collection<string, ContextMenu> = new Collection();
   public events: Collection<string, Event> = new Collection();
   public buttons: Collection<string, Button> = new Collection();
   public modals: Collection<string, Modal> = new Collection();
@@ -60,11 +82,15 @@ export default class Client {
   public clientId: string | undefined = undefined;
 
   private errorHandler: ErrorHandler | undefined = undefined;
+  private middlewares: Middleware[] = [];
+  private cooldowns = new Map<string, number>();
   private _loginTimeout: number | undefined = undefined;
+  private _token: string | undefined = undefined;
 
   constructor(options: ClientOptions = {}) {
     this._name = options.name ?? "Unnamed Client";
     this._debug = options.debug ?? false;
+    if ("token" in options) this.setToken(options.token);
 
     this._discord = new DiscordClient({
       intents: options.intents ?? [
@@ -101,13 +127,33 @@ export default class Client {
 
   /**
    * Manually set the bot's Discord application ID.
-   * Not required if you call {@link start} first — the ID is resolved automatically on login.
-   * Needed when calling {@link pushCommands} before {@link start}.
+   * Optional: {@link pushCommands} looks the ID up from the token when it isn't set.
    * @throws If called after `start()`.
    */
   setClientId(id: string): this {
     this.ensureMutable();
     this.clientId = id;
+    return this;
+  }
+
+  /**
+   * Set the bot token used by {@link start} and {@link pushCommands}, so it doesn't
+   * have to be passed to each. Takes the value straight from whichever env var you
+   * use; without it the client falls back to `TOKEN`, then `DISCORD_TOKEN`.
+   *
+   * @example
+   * ```ts
+   * new Client().setToken(process.env.MY_BOT_TOKEN);
+   * ```
+   * @throws If the value is empty, which usually means the env var isn't set.
+   *   Also if called after `start()`.
+   */
+  setToken(token: string | undefined): this {
+    this.ensureMutable();
+    if (!token) {
+      throw new Error("setToken() got an empty value. Is the env var set?");
+    }
+    this._token = token;
     return this;
   }
 
@@ -132,36 +178,54 @@ export default class Client {
     return this._debug;
   }
 
+  /** The underlying discord.js client, for anything this wrapper doesn't cover. */
   get discord(): DiscordClient {
     return this._discord;
   }
 
   /**
    * Load handlers from an app directory.
-   * Scans for `commands/`, `events/`, `buttons/`, `modals/`, `select-menus/` subdirectories
-   * and an optional `error.ts` file. Can be called multiple times to merge handlers from
-   * different directories. Safe to call after {@link start}.
+   * Scans for `commands/`, `context-menus/`, `events/`, `buttons/`, `modals/` and
+   * `select-menus/` subdirectories, plus optional `error` and `middleware` files.
+   * Can be called multiple times to merge handlers from different directories.
+   * Safe to call after {@link start}.
    *
-   * @param appDir - Path to the compiled app directory (absolute or relative to `process.cwd()`).
+   * Handler files may be compiled JavaScript or, when the process can import
+   * TypeScript (tsx, ts-node, Node's type stripping), the `.ts` sources.
+   *
+   * @param appDir - A path (absolute or relative to `process.cwd()`) or a `file:` URL.
+   *   Pass `new URL("./app", import.meta.url)` to resolve next to the calling file,
+   *   so the same line works from `src/` and from the build output.
    * @returns `this` for chaining.
    *
    * @example
    * ```ts
-   * await client.use("./dist/app");
+   * await client.use(new URL("./app", import.meta.url));
    * ```
    */
-  async use(appDir: string): Promise<this> {
-    const resolvedDir = path.isAbsolute(appDir)
-      ? appDir
-      : path.join(process.cwd(), appDir);
+  async use(appDir: string | URL): Promise<this> {
+    const resolvedDir =
+      appDir instanceof URL || appDir.startsWith("file:")
+        ? fileURLToPath(appDir)
+        : path.resolve(appDir);
 
-    const { commands, events, buttons, modals, selectMenus, errorHandler, counts } = await collectAll(resolvedDir);
+    if (!fs.existsSync(resolvedDir)) {
+      logger.warn(`[use] ${resolvedDir} does not exist, no handlers loaded`);
+      return this;
+    }
+
+    const {
+      commands, contextMenus, events, buttons, modals, selectMenus,
+      errorHandler, middleware, counts,
+    } = await collectAll(resolvedDir);
 
     commands.forEach((cmd, name) => this.commands.set(name, cmd));
+    contextMenus.forEach((menu, key) => this.contextMenus.set(key, menu));
     buttons.forEach((btn, id) => this.buttons.set(id, btn));
     modals.forEach((modal, id) => this.modals.set(id, modal));
     selectMenus.forEach((menu, id) => this.selectMenus.set(id, menu));
     if (errorHandler) this.errorHandler = errorHandler;
+    this.middlewares.push(...middleware);
     events.forEach((evt, name) => {
       this.events.set(name, evt);
       if (this.started) this.attachEventListener(evt);
@@ -170,10 +234,12 @@ export default class Client {
     if (this._debug) {
       logger.output(
         `[use] ${counts.commands.loaded}/${counts.commands.total} commands,` +
+        ` ${counts.contextMenus.loaded}/${counts.contextMenus.total} context menus,` +
         ` ${counts.events.loaded}/${counts.events.total} events,` +
         ` ${counts.buttons.loaded}/${counts.buttons.total} buttons,` +
         ` ${counts.modals.loaded}/${counts.modals.total} modals,` +
-        ` ${counts.selectMenus.loaded}/${counts.selectMenus.total} select menus`
+        ` ${counts.selectMenus.loaded}/${counts.selectMenus.total} select menus,` +
+        ` ${middleware.length} middleware`
       );
     }
 
@@ -181,10 +247,29 @@ export default class Client {
   }
 
   /**
+   * Add middleware that runs around every routed interaction, in the order added
+   * and before guards and cooldowns. Middleware exported from `{appDir}/middleware.ts`
+   * is added by {@link use} the same way.
+   *
+   * @example
+   * ```ts
+   * client.middleware(async (ctx, next) => {
+   *   console.log(`${ctx.interaction.user.tag} -> ${ctx.kind} ${ctx.name}`);
+   *   await next();
+   * });
+   * ```
+   */
+  middleware(...fns: Middleware[]): this {
+    this.middlewares.push(...fns);
+    return this;
+  }
+
+  /**
    * Log in to Discord and begin handling interactions and events.
    * Call {@link use} first to load your handlers.
    *
-   * @param token - Bot token. Falls back to `TOKEN` then `DISCORD_TOKEN` env vars.
+   * @param token - Bot token. Falls back to {@link setToken}, then the `TOKEN` and
+   *   `DISCORD_TOKEN` env vars.
    * @returns `this` for chaining.
    * @throws If already started, if no token is found, or if login times out (when
    *   {@link setLoginTimeout} is set).
@@ -194,10 +279,7 @@ export default class Client {
       throw new Error("Client already started");
     }
 
-    const resolvedToken = token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
-    if (!resolvedToken) {
-      throw new Error("No token provided. Set TOKEN or DISCORD_TOKEN env var.");
-    }
+    const resolvedToken = this.resolveToken(token);
 
     this._discord.once(Events.ClientReady, () => {
       if (this._debug) logger.output(`${this._name} logged in as ${this._discord.user?.tag}`);
@@ -206,91 +288,23 @@ export default class Client {
       }
     });
 
-    this._discord.on("interactionCreate", async (interaction: Interaction) => {
-      if (interaction.isAutocomplete()) {
-        const command = this.commands.get(interaction.commandName);
-        if (!command?.autocomplete) {
-          if (this._debug) logger.warn(`No autocomplete handler for "${interaction.commandName}"`);
-          return;
-        }
-        try {
-          await command.autocomplete(interaction);
-        } catch (err: unknown) {
-          logger.error(`Error in autocomplete "${interaction.commandName}":`, err);
-        }
-      } else if (interaction.isChatInputCommand()) {
-        const command = this.commands.get(interaction.commandName);
-        if (!command) {
-          if (this._debug) logger.warn(`No handler for command "${interaction.commandName}"`);
-          return;
-        }
-        try {
-          await command.execute(interaction);
-        } catch (err: unknown) {
-          logger.error(`Error in command "${interaction.commandName}":`, err);
-          await this.dispatchError(interaction, err);
-        }
-      } else if (interaction.isButton()) {
-        let matched = false;
-        for (const [customId, button] of this.buttons) {
-          const params = matchCustomId(customId, interaction.customId);
-          if (params !== null) {
-            matched = true;
-            try {
-              await button.execute(interaction, params);
-            } catch (err: unknown) {
-              logger.error(`Error in button "${customId}":`, err);
-              await this.dispatchError(interaction, err);
-            }
-            break;
-          }
-        }
-        if (!matched && this._debug) logger.warn(`No handler matched button "${interaction.customId}"`);
-      } else if (interaction.isModalSubmit()) {
-        let matched = false;
-        for (const [customId, modal] of this.modals) {
-          const params = matchCustomId(customId, interaction.customId);
-          if (params !== null) {
-            matched = true;
-            try {
-              await modal.execute(interaction, params);
-            } catch (err: unknown) {
-              logger.error(`Error in modal "${customId}":`, err);
-              await this.dispatchError(interaction, err);
-            }
-            break;
-          }
-        }
-        if (!matched && this._debug) logger.warn(`No handler matched modal "${interaction.customId}"`);
-      } else if (interaction.isAnySelectMenu()) {
-        let matched = false;
-        for (const [customId, menu] of this.selectMenus) {
-          const params = matchCustomId(customId, interaction.customId);
-          if (params !== null) {
-            matched = true;
-            try {
-              await menu.execute(interaction, params);
-            } catch (err: unknown) {
-              logger.error(`Error in select menu "${customId}":`, err);
-              await this.dispatchError(interaction, err);
-            }
-            break;
-          }
-        }
-        if (!matched && this._debug) logger.warn(`No handler matched select menu "${interaction.customId}"`);
-      }
-    });
+    this._discord.on(Events.InteractionCreate, (interaction) => this.handleInteraction(interaction));
 
     this.events.forEach((event) => this.attachEventListener(event));
 
     if (this._loginTimeout !== undefined) {
       const timeout = this._loginTimeout;
-      await Promise.race([
-        this._discord.login(resolvedToken),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Login timed out after ${timeout}ms`)), timeout)
-        ),
-      ]);
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          this._discord.login(resolvedToken),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Login timed out after ${timeout}ms`)), timeout);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     } else {
       await this._discord.login(resolvedToken);
     }
@@ -300,35 +314,41 @@ export default class Client {
   }
 
   /**
-   * Register all loaded slash commands with Discord via the REST API.
+   * Register all loaded slash commands and context menus with Discord via the REST API.
    * Pass a `guildId` for instant guild-scoped registration (useful during development).
    * Omit for global registration (can take up to an hour to propagate).
    *
-   * @param token - Bot token. Falls back to `TOKEN` then `DISCORD_TOKEN` env vars.
+   * Works before or after {@link start}. The application ID comes from
+   * {@link setClientId}, the logged-in client, or a lookup with the token.
+   *
+   * @param token - Bot token. Falls back to {@link setToken}, then the `TOKEN` and
+   *   `DISCORD_TOKEN` env vars.
    * @param guildId - Guild ID for guild-scoped registration. Omit for global.
-   * @throws If no token is found or if the client ID is not available.
+   * @throws If no token is found or if the application ID can't be resolved.
    */
   async pushCommands(token?: string, guildId?: string): Promise<void> {
-    const resolvedToken = token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
-    if (!resolvedToken) {
-      throw new Error("No token provided. Set TOKEN or DISCORD_TOKEN env var.");
-    }
-
-    if (!this._discord.isReady()) {
-      logger.warn("Client isn't ready yet. Waiting...");
-      await new Promise<void>((resolve) => {
-        this._discord.once(Events.ClientReady, () => resolve());
-      });
-    }
+    const rest = new REST({ version: "10" }).setToken(this.resolveToken(token));
 
     if (!this.clientId) {
-      throw new Error(
-        "Client ID wasn't initialized correctly, try adding it manually with setClientId()"
-      );
+      if (this._discord.isReady()) {
+        this.clientId = this._discord.user.id;
+      } else {
+        try {
+          const app = await rest.get(Routes.currentApplication()) as { id: string };
+          this.clientId = app.id;
+        } catch (err: unknown) {
+          throw new Error(
+            "Couldn't look up the application ID from the token, set it with setClientId()",
+            { cause: err }
+          );
+        }
+      }
     }
 
-    const commandsData = this.commands.map((cmd) => cmd.data.toJSON());
-    const rest = new REST({ version: "10" }).setToken(resolvedToken);
+    const commandsData = [
+      ...this.commands.map((cmd) => cmd.data.toJSON()),
+      ...this.contextMenus.map((menu) => menu.data.toJSON()),
+    ];
 
     try {
       if (guildId) {
@@ -350,30 +370,219 @@ export default class Client {
     }
   }
 
-  private async dispatchError(interaction: Interaction, error: unknown): Promise<void> {
+  private resolveToken(token?: string): string {
+    const resolved = token ?? this._token ?? process.env.TOKEN ?? process.env.DISCORD_TOKEN;
+    if (!resolved) {
+      throw new Error(
+        "No token provided. Pass one, call setToken(), or set the TOKEN or DISCORD_TOKEN env var."
+      );
+    }
+    return resolved;
+  }
+
+  private async handleInteraction(interaction: Interaction): Promise<void> {
+    if (interaction.isAutocomplete() || interaction.isChatInputCommand()) {
+      const command = this.commands.get(interaction.commandName);
+      if (!command) {
+        if (this._debug) logger.warn(`No handler for command "${interaction.commandName}"`);
+        return;
+      }
+      const subName = command.subcommands ? interaction.options.getSubcommand(false) : null;
+      const sub = subName ? command.subcommands?.get(subName) : undefined;
+      const name = subName ? `${interaction.commandName} ${subName}` : interaction.commandName;
+
+      if (interaction.isAutocomplete()) {
+        const autocomplete = (sub ?? command).autocomplete;
+        if (!autocomplete) {
+          if (this._debug) logger.warn(`No autocomplete handler for "${name}"`);
+          return;
+        }
+        await this.run({ interaction, kind: "autocomplete", name, params: {} }, [], () =>
+          autocomplete(interaction)
+        );
+        return;
+      }
+
+      const limits: Limits[] = [{ key: interaction.commandName, ...pickLimits(command) }];
+      if (sub) limits.push({ key: name, ...pickLimits(sub) });
+      // A subcommand folder's command routes to the subcommand itself here, so its
+      // own guards and cooldown apply on top of the group's.
+      await this.run({ interaction, kind: "command", name, params: {} }, limits, () =>
+        (sub ?? command).execute(interaction)
+      );
+    } else if (interaction.isContextMenuCommand()) {
+      const menu = this.contextMenus.get(
+        contextMenuKey(interaction.commandType, interaction.commandName)
+      );
+      if (!menu) {
+        if (this._debug) logger.warn(`No handler for context menu "${interaction.commandName}"`);
+        return;
+      }
+      const name = interaction.commandName;
+      await this.run(
+        { interaction, kind: "contextMenu", name, params: {} },
+        [{ key: name, ...pickLimits(menu) }],
+        () => menu.execute(interaction)
+      );
+    } else if (interaction.isButton()) {
+      const match = findByCustomId(this.buttons, interaction.customId);
+      if (!match) {
+        if (this._debug) logger.warn(`No handler matched button "${interaction.customId}"`);
+        return;
+      }
+      const { pattern, handler, params } = match;
+      await this.run(
+        { interaction, kind: "button", name: pattern, params },
+        [{ key: pattern, ...pickLimits(handler) }],
+        () => handler.execute(interaction, params)
+      );
+    } else if (interaction.isModalSubmit()) {
+      const match = findByCustomId(this.modals, interaction.customId);
+      if (!match) {
+        if (this._debug) logger.warn(`No handler matched modal "${interaction.customId}"`);
+        return;
+      }
+      const { pattern, handler, params } = match;
+      await this.run(
+        { interaction, kind: "modal", name: pattern, params },
+        [{ key: pattern, ...pickLimits(handler) }],
+        () => handler.execute(interaction, params)
+      );
+    } else if (interaction.isAnySelectMenu()) {
+      const match = findByCustomId(this.selectMenus, interaction.customId);
+      if (!match) {
+        if (this._debug) logger.warn(`No handler matched select menu "${interaction.customId}"`);
+        return;
+      }
+      const { pattern, handler, params } = match;
+      await this.run(
+        { interaction, kind: "selectMenu", name: pattern, params },
+        [{ key: pattern, ...pickLimits(handler) }],
+        () => handler.execute(interaction, params)
+      );
+    }
+  }
+
+  /**
+   * Runs one routed interaction: middleware, then guards, then cooldowns, then the
+   * handler. `limits` is ordered outermost first. Never rejects; failures go to
+   * the error handler.
+   */
+  private async run(
+    route: Omit<MiddlewareContext, "client">,
+    limits: Limits[],
+    execute: () => Promise<void>
+  ): Promise<void> {
+    const ctx: MiddlewareContext = { ...route, client: this };
+    const { interaction } = ctx;
+
+    const handle = async (): Promise<void> => {
+      if (!interaction.isAutocomplete()) {
+        for (const { guards } of limits) {
+          for (const guard of guards ?? []) {
+            const result = await (guard as Guard)(interaction);
+            if (result !== true) {
+              await this.respond(interaction, typeof result === "string" ? result : DEFAULT_DENIAL);
+              return;
+            }
+          }
+        }
+        const denial = this.checkCooldowns(ctx.kind, limits, interaction);
+        if (denial !== null) {
+          await this.respond(interaction, denial);
+          return;
+        }
+      }
+      await execute();
+    };
+
+    let reached = -1;
+    const dispatch = async (i: number): Promise<void> => {
+      if (i <= reached) throw new Error("next() called more than once in a middleware");
+      reached = i;
+      const fn = this.middlewares[i];
+      if (!fn) return handle();
+      await fn(ctx, () => dispatch(i + 1));
+    };
+
+    try {
+      await dispatch(0);
+    } catch (err: unknown) {
+      logger.error(`Error in ${ctx.kind} "${ctx.name}":`, err);
+      await this.dispatchError(ctx, err);
+    }
+  }
+
+  /**
+   * Returns the message to send if any of the cooldowns is still running.
+   * Otherwise starts them all and returns null.
+   */
+  private checkCooldowns(kind: string, limits: Limits[], interaction: GuardInteraction): string | null {
+    const now = Date.now();
+    const pending: Array<[key: string, duration: number]> = [];
+
+    for (const { key, cooldown } of limits) {
+      if (cooldown === undefined) continue;
+      const options = typeof cooldown === "number" ? { duration: cooldown } : cooldown;
+      if (!(options.duration > 0)) continue;
+
+      const scope = options.scope ?? "user";
+      // Guild and channel scopes fall back to the user in DMs, where those IDs are missing.
+      const scopeId =
+        scope === "global" ? "" :
+        scope === "guild" ? interaction.guildId ?? interaction.user.id :
+        scope === "channel" ? interaction.channelId ?? interaction.user.id :
+        interaction.user.id;
+      const storeKey = `${kind}:${key}:${scope}:${scopeId}`;
+
+      const expires = this.cooldowns.get(storeKey);
+      if (expires !== undefined && expires > now) {
+        const { message } = options;
+        if (typeof message === "function") return message(expires - now);
+        return message ?? `You're on cooldown. Try again <t:${Math.ceil(expires / 1000)}:R>.`;
+      }
+      pending.push([storeKey, options.duration]);
+    }
+
+    for (const [storeKey, duration] of pending) this.cooldowns.set(storeKey, now + duration);
+
+    if (this.cooldowns.size > COOLDOWN_SWEEP_SIZE) {
+      for (const [storeKey, expires] of this.cooldowns) {
+        if (expires <= now) this.cooldowns.delete(storeKey);
+      }
+    }
+    return null;
+  }
+
+  /** Sends an ephemeral message as a reply, or as a follow-up if the interaction already has a response. */
+  private async respond(interaction: GuardInteraction, content: string): Promise<void> {
+    const message = { content, flags: MessageFlags.Ephemeral } as const;
+    try {
+      if (interaction.replied || interaction.deferred) await interaction.followUp(message);
+      else await interaction.reply(message);
+    } catch {
+      // Interaction expired or was answered in the meantime
+    }
+  }
+
+  private async dispatchError(ctx: MiddlewareContext, error: unknown): Promise<void> {
+    const { interaction } = ctx;
+
     if (this.errorHandler) {
-      const specific = (
-        interaction.isChatInputCommand() ? this.errorHandler.command :
-        interaction.isButton() ? this.errorHandler.button :
-        interaction.isModalSubmit() ? this.errorHandler.modal :
-        interaction.isAnySelectMenu() ? this.errorHandler.selectMenu :
-        interaction.isAutocomplete() ? this.errorHandler.autocomplete :
-        undefined
-      ) as ((i: Interaction, e: unknown) => void | Promise<void>) | undefined;
+      const specific = this.errorHandler[ctx.kind] as
+        ((i: Interaction, e: unknown) => void | Promise<void>) | undefined;
       const handler = specific ?? this.errorHandler.execute;
       try {
-        await handler(interaction, error);
+        // ContextMenuCommandInteraction is the base of two Interaction members, not one itself.
+        await handler(interaction as Interaction, error);
       } catch (e: unknown) {
         logger.error("Error in error handler:", e);
       }
     }
 
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      try {
-        await interaction.reply({ content: "An error occurred.", ephemeral: true });
-      } catch {
-        // Already replied or interaction expired
-      }
+    // A deferred interaction would otherwise show "thinking..." until it expires.
+    if (!interaction.isAutocomplete() && !interaction.replied) {
+      await this.respond(interaction, "An error occurred.");
     }
   }
 
@@ -403,4 +612,20 @@ export default class Client {
       throw new Error("Cannot modify client after start");
     }
   }
+}
+
+function pickLimits(handler: Omit<Limits, "key">): Omit<Limits, "key"> {
+  return { guards: handler.guards, cooldown: handler.cooldown };
+}
+
+/** First handler whose customId pattern matches. Collections are sorted most specific first. */
+function findByCustomId<T>(
+  handlers: Collection<string, T>,
+  customId: string
+): { pattern: string; handler: T; params: Record<string, string> } | null {
+  for (const [pattern, handler] of handlers) {
+    const params = matchCustomId(pattern, customId);
+    if (params !== null) return { pattern, handler, params };
+  }
+  return null;
 }

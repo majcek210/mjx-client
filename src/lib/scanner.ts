@@ -8,6 +8,20 @@ export interface ScannedFile {
   fileUrl: string;
 }
 
+// Compiled output wins when a folder holds both, so a dist build never loads its sources.
+// The TypeScript entries are for running an app directory straight from source (tsx, ts-node,
+// or Node's own type stripping).
+const EXTENSIONS = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"];
+
+/** Returns the path of `<dir>/<basename>.<ext>` for the first extension that exists. */
+export function findModule(dir: string, basename: string): string | undefined {
+  for (const ext of EXTENSIONS) {
+    const candidate = path.join(dir, basename + ext);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  }
+  return undefined;
+}
+
 export function scanDirectory(dir: string): ScannedFile[] {
   if (!fs.existsSync(dir)) return [];
   const results: ScannedFile[] = [];
@@ -18,15 +32,16 @@ export function scanDirectory(dir: string): ScannedFile[] {
 function walkDir(rootDir: string, currentDir: string, results: ScannedFile[]): void {
   const entries = fs.readdirSync(currentDir, { withFileTypes: true });
   for (const entry of entries) {
-    const fullPath = path.join(currentDir, entry.name);
     if (entry.isDirectory()) {
-      walkDir(rootDir, fullPath, results);
-    } else if (entry.isFile() && entry.name === "index.js") {
-      results.push({
-        absolutePath: fullPath,
-        relativePath: path.relative(rootDir, fullPath),
-        fileUrl: pathToFileURL(fullPath).href,
-      });
+      walkDir(rootDir, path.join(currentDir, entry.name), results);
     }
+  }
+  const index = findModule(currentDir, "index");
+  if (index) {
+    results.push({
+      absolutePath: index,
+      relativePath: path.relative(rootDir, index),
+      fileUrl: pathToFileURL(index).href,
+    });
   }
 }

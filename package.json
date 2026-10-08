@@ -26,5 +26,13 @@
   },
   "dependencies": {
     "discord.js": "^14.25.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/majcek210/mjx-client.git"
+  },
+  "homepage": "https://github.com/majcek210/mjx-client#readme",
+  "bugs": {
+    "url": "https://github.com/majcek210/mjx-client/issues"
   }
 }
